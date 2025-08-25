@@ -372,14 +372,19 @@ class DeepseekV2MoE(nn.Module):
                 "awq",
                 "awq_marlin",
                 "moe_wna16",
+                "autoround",
             }
+            shared_gate_up_layer = self.shared_experts.gate_up_proj
+            weight_tensor = getattr(shared_gate_up_layer, "weight", getattr(shared_gate_up_layer, "qweight", None))
             self.shared_experts_is_int8 = (
                 not is_packed_weight
-                and self.shared_experts.gate_up_proj.weight.dtype == torch.int8
+                and weight_tensor is not None
+                and weight_tensor.dtype == torch.int8
             )
             self.shared_experts_is_fp8 = (
                 not is_packed_weight
-                and self.shared_experts.gate_up_proj.weight.dtype == torch.float8_e4m3fn
+                and weight_tensor is not None
+                and weight_tensor.dtype == torch.float8_e4m3fn
             )
             if self.shared_experts_is_fp8:
                 assert (
@@ -925,7 +930,7 @@ class DeepseekV2AttentionMLA(nn.Module):
             has_fused_proj
             and hasattr(self.fused_qkv_a_proj_with_mqa.quant_method, "quant_config")
             and self.fused_qkv_a_proj_with_mqa.quant_method.quant_config.get_name()
-            in {"awq", "awq_marlin", "moe_wna16"}
+            in {"awq", "awq_marlin", "moe_wna16", "autoround"}
         )
         layer = self.fused_qkv_a_proj_with_mqa
         weight_tensor = getattr(layer, "weight", getattr(layer, "qweight", None))
@@ -2631,7 +2636,8 @@ class DeepseekV2ForCausalLM(nn.Module):
                                 if self.quant_config is not None and (
                                     self.quant_config.get_name() == "awq"
                                     or self.quant_config.get_name() == "awq_marlin"
-                                    or self.quant_config.get_name() == "moe_wna16"
+                                    or self.quant_config.get_name() == "moe_wna16",
+                                    or self.quant_config.get_name() == "autoround"
                                 ):
                                     cat_dim = 1
                                 fused_weight = torch.cat(
