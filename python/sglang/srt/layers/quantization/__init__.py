@@ -33,14 +33,15 @@ except ImportError as e:
     class DummyConfig:
         def override_quantization_method(self, *args, **kwargs):
             return None
-
+    
     AQLMConfig = BitsAndBytesConfig = CompressedTensorsConfig = DeepSpeedFPConfig = (
         ExpertsInt8Config
     ) = GGUFConfig = GPTQMarlin24Config = MarlinConfig = QQQConfig = Int8TpuConfig = (
-        DummyConfig
-    )
+        AutoRoundConfig
+    ) = DummyConfig
 
 
+from sglang.srt.layers.quantization.auto_round import AutoRoundConfig
 from sglang.srt.layers.quantization.awq import AWQConfig, AWQMarlinConfig
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.layers.quantization.blockwise_int8 import BlockInt8Config
@@ -86,6 +87,7 @@ BASE_QUANTIZATION_METHODS: Dict[str, Type[QuantizationConfig]] = {
     "w4afp8": W4AFp8Config,
     "petit_nvfp4": PetitNvFp4Config,
     "fbgemm_fp8": FBGEMMFp8Config,
+    "auto-round": AutoRoundConfig,
 }
 
 
