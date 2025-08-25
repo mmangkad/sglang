@@ -927,12 +927,15 @@ class DeepseekV2AttentionMLA(nn.Module):
             and self.fused_qkv_a_proj_with_mqa.quant_method.quant_config.get_name()
             in {"awq", "awq_marlin", "moe_wna16"}
         )
+        layer = self.fused_qkv_a_proj_with_mqa
+        weight_tensor = getattr(layer, "weight", getattr(layer, "qweight", None))
         self.use_min_latency_fused_a_gemm = (
             has_fused_proj
             and not is_packed_weight
-            and self.fused_qkv_a_proj_with_mqa.weight.dtype == torch.bfloat16
-            and self.fused_qkv_a_proj_with_mqa.weight.shape[0] == 2112
-            and self.fused_qkv_a_proj_with_mqa.weight.shape[1] == 7168
+            and weight_tensor is not None
+            and weight_tensor.dtype == torch.bfloat16
+            and weight_tensor.shape[0] == 2112
+            and weight_tensor.shape[1] == 7168
             and _is_cuda
             and _device_sm >= 90
         )
