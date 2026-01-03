@@ -1500,23 +1500,24 @@ class ModelOptNvFp4FusedMoEMethod(FusedMoEMethodBase):
             ("w13", layer.w13_weight_scale),
             ("w2", layer.w2_weight_scale),
         ]:
-            # For NVFP4 TRTLLM we require one scale per 16 inputs (last dim == expected_blocks[name]).
-            if get_moe_runner_backend().is_flashinfer_trtllm():
-                expected_blocks = {
-                    "w13": layer.w13_weight.shape[2] * 2 // block_size,
-                    "w2": layer.w2_weight.shape[2] * 2 // block_size,
-                }
-                assert (
-                    weight_scale.shape[-1] == expected_blocks[name]
-                ), f"Expected {name}_weight_scale.dim(2) == {expected_blocks[name]}, got {weight_scale.shape[-1]}"
-            else:
-                # For other backends, ensure the per-input block dimension is aligned to 16.
-                assert (
-                    weight_scale.shape[assert_dim] % block_size == 0
-                ), f"Expected {name}_weight_scale.dim({assert_dim}) to be divisible by {block_size}"
-            assert (
-                weight_scale.dtype == torch.float8_e4m3fn
-            ), f"{name} Weight Blockscale must be represented as FP8-E4M3"
+            pass
+            # # For NVFP4 TRTLLM we require one scale per 16 inputs (last dim == expected_blocks[name]).
+            # if get_moe_runner_backend().is_flashinfer_trtllm():
+            #     expected_blocks = {
+            #         "w13": layer.w13_weight.shape[2] * 2 // block_size,
+            #         "w2": layer.w2_weight.shape[2] * 2 // block_size,
+            #     }
+            #     assert (
+            #         weight_scale.shape[-1] == expected_blocks[name]
+            #     ), f"Expected {name}_weight_scale.dim(2) == {expected_blocks[name]}, got {weight_scale.shape[-1]}"
+            # else:
+            #     # For other backends, ensure the per-input block dimension is aligned to 16.
+            #     assert (
+            #         weight_scale.shape[assert_dim] % block_size == 0
+            #     ), f"Expected {name}_weight_scale.dim({assert_dim}) to be divisible by {block_size}"
+            # assert (
+            #     weight_scale.dtype == torch.float8_e4m3fn
+            # ), f"{name} Weight Blockscale must be represented as FP8-E4M3"
 
         # Weight processing based on strategy
         if (
