@@ -756,9 +756,6 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         if self.mxfp4_backend == Mxfp4Backend.MARLIN:
             from sglang.srt.layers.moe.moe_runner.marlin import MarlinMxfp4MoeQuantInfo
             
-            # Get original hidden size for output unpadding
-            original_hidden_size = getattr(layer, 'original_hidden_size', None)
-            
             quant_info = MarlinMxfp4MoeQuantInfo(
                 w13_qweight=layer.w13_weight,
                 w2_qweight=layer.w2_weight,

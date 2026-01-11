@@ -102,10 +102,6 @@ class MarlinMxfp4MoeQuantInfo(MoeQuantInfo):
     
     # Activation function name
     activation: str = "silu"
-    
-    # Original hidden size before padding (for CUDA graphs)
-    # If provided, output will be sliced to this size
-    original_hidden_size: Optional[int] = None
 
 
 @register_fused_func("none", "marlin")
@@ -180,7 +176,6 @@ def fused_experts_none_to_marlin(
             expert_map=quant_info.expert_map,
             workspace=MARLIN_MOE_WORKSPACE,
             inplace=runner_config.inplace,
-            original_hidden_size=quant_info.original_hidden_size,
         ).to(hidden_states.dtype)
 
         return StandardCombineInput(

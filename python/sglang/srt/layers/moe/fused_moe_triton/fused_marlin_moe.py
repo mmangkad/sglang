@@ -284,7 +284,6 @@ def fused_marlin_moe_mxfp4(
     input_dtype: Optional[torch.dtype] = None,
     is_k_full: bool = True,
     inplace: bool = False,
-    original_hidden_size: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Fused MoE kernel for MXFP4 quantized weights using the Marlin kernel.
@@ -320,11 +319,10 @@ def fused_marlin_moe_mxfp4(
     - input_dtype (Optional[torch.dtype]): Input dtype for activation quantization.
     - is_k_full (bool): Whether K dimension is full (no act_order).
     - inplace (bool): Whether to write output in-place to hidden_states.
-    - original_hidden_size (Optional[int]): Original hidden size before padding. If provided,
-      the output will be sliced to this size. This is important for CUDA graphs.
 
     Returns:
-    - torch.Tensor: The output tensor after applying the MoE layer.
+    - torch.Tensor: The output tensor after applying the MoE layer, with the same
+      hidden dimension as the input (unpadded if weights were padded for alignment).
     """
     from sglang.srt.layers.moe.fused_moe_triton import moe_align_block_size
 
@@ -496,15 +494,13 @@ def fused_marlin_moe_mxfp4(
     output = output.view(-1, topk, K)
 
     # Determine the output hidden size
-    # If original_hidden_size is provided and smaller than K, we need to unpad the output
-    output_K = original_hidden_size if original_hidden_size is not None else K
+    # We want to return output with the same shape as the original input (before padding)
+    # input_K is captured at the start of the function from hidden_states.size()
+    output_K = input_K  # Always return with original input dimension
     needs_unpad = output_K < K
     
     # When we padded the input, hidden_states now has shape [M, K] (padded)
-    # So inplace mode only works when:
-    # 1. We need to unpad AND the original hidden_states shape matches output_K, OR
-    # 2. We don't need to unpad AND hidden_states shape matches K
-    # For simplicity, only use inplace when no unpadding is needed
+    # So inplace mode only works when no unpadding is needed
     if inplace and not needs_unpad:
         # True inplace - hidden_states has shape [M, K] = [M, output_K]
         final_output = hidden_states
