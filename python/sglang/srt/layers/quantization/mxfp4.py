@@ -366,15 +366,27 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         intermediate_size_per_partition_after_pad = intermediate_size_per_partition
         
         if self.use_marlin:
-            # Marlin kernel requires n % 128 == 0 and k % 64 == 0
-            # For gate_up_proj: n = 2 * intermediate_size, k = hidden_size
-            # For down_proj: n = hidden_size, k = intermediate_size
+            # Marlin kernel requires:
+            # - For gate_up_proj: n = 2 * intermediate_size (n % 256 == 0), k = hidden_size (k % 128 == 0)
+            # - For down_proj: n = hidden_size (n % 256 == 0), k = intermediate_size (k % 128 == 0)
+            #
+            # We pad intermediate_size but NOT hidden_size to avoid mismatch with hidden_states
+            # The model's hidden_size must already be compatible with Marlin requirements
+
+            # Check hidden_size compatibility
+            if hidden_size % 256 != 0:
+                raise ValueError(
+                    f"Marlin MXFP4 MoE kernel requires hidden_size to be a multiple of 256, "
+                    f"but got hidden_size={hidden_size}. This model may not be compatible "
+                    f"with the Marlin backend on SM120 (Blackwell RTX 50-series)."
+                )
+
+            # Pad intermediate_size to multiple of 128
             intermediate_size_per_partition_after_pad = round_up(
                 intermediate_size_per_partition, 128
             )
-            hidden_size = round_up(hidden_size, 256)
-            
-            # Store original sizes for layer config
+
+            # Store sizes for layer config (hidden_size is NOT padded)
             layer.params_dtype = params_dtype
             layer.marlin_hidden_size = hidden_size
             layer.marlin_intermediate_size = intermediate_size_per_partition_after_pad
