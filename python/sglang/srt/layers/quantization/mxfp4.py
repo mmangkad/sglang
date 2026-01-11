@@ -744,6 +744,7 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 fused_marlin_moe,
             )
             from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
+            from sgl_kernel.scalar_type import scalar_types
 
             topk_weights, topk_ids, _ = topk_output
             router_logits = topk_output.router_logits
@@ -757,6 +758,9 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
             # Get activation from layer or default to swigluoai for GPT-OSS
             activation = getattr(layer, 'mxfp4_activation', 'swigluoai')
 
+            # Get apply_router_weight_on_input from layer (default False like vLLM)
+            apply_router_weight_on_input = getattr(layer, 'apply_router_weight_on_input', False)
+
             # Pad hidden_states if needed (when original hidden_size != padded hidden_size)
             original_hidden_size = getattr(layer, 'marlin_original_hidden_size', x.shape[-1])
             padded_hidden_size = getattr(layer, 'marlin_hidden_size', x.shape[-1])
@@ -766,8 +770,6 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 x_padded = torch.nn.functional.pad(
                     x, (0, padded_hidden_size - original_hidden_size), mode='constant', value=0.0
                 )
-                # Also need to pad router_logits if it depends on hidden_size
-                # (router_logits is typically (batch, num_experts) so no padding needed)
             else:
                 x_padded = x
 
@@ -775,23 +777,21 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 hidden_states=x_padded,
                 w1=layer.w13_weight,
                 w2=layer.w2_weight,
+                bias1=layer.w13_weight_bias,
+                bias2=layer.w2_weight_bias,
                 w1_scale=layer.w13_weight_scale,
                 w2_scale=layer.w2_weight_scale,
                 gating_output=router_logits,
                 topk_weights=topk_weights.to(torch.float32),
                 topk_ids=topk_ids,
+                quant_type_id=scalar_types.float4_e2m1f.id,
+                apply_router_weight_on_input=apply_router_weight_on_input,
                 global_num_experts=layer.num_experts,
+                activation=activation,
                 expert_map=getattr(layer, 'expert_map', None),
                 workspace=layer.marlin_workspace,
-                num_bits=4,
                 is_k_full=True,
                 inplace=False,
-                routed_scaling_factor=None,
-                # MXFP4 specific parameters
-                w1_bias=layer.w13_weight_bias,
-                w2_bias=layer.w2_weight_bias,
-                is_mxfp4=True,
-                activation=activation,
             )
 
             # Unpad output back to original hidden_size
