@@ -339,9 +339,16 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         self.mxfp4_backend = get_mxfp4_backend()
         
         # Set backend-specific flags
-        self.use_triton_kernels = get_moe_runner_backend().is_triton_kernels()
-        self.use_flashinfer = get_moe_runner_backend().is_flashinfer_mxfp4()
-        self.use_marlin = self.mxfp4_backend == Mxfp4Backend.MARLIN
+        self.use_marlin = (
+            self.mxfp4_backend == Mxfp4Backend.MARLIN
+            or get_moe_runner_backend().is_marlin()
+        )
+        self.use_triton_kernels = (
+            not self.use_marlin and get_moe_runner_backend().is_triton_kernels()
+        )
+        self.use_flashinfer = (
+            not self.use_marlin and get_moe_runner_backend().is_flashinfer_mxfp4()
+        )
         
         self.flashinfer_mxfp4_moe_precision = (
             get_global_server_args().flashinfer_mxfp4_moe_precision

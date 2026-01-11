@@ -176,6 +176,7 @@ MOE_RUNNER_BACKEND_CHOICES = [
     "flashinfer_mxfp4",
     "flashinfer_cutedsl",
     "cutlass",
+    "marlin",
 ]
 
 MOE_A2A_BACKEND_CHOICES = ["none", "deepep", "mooncake", "ascend_fuseep"]
@@ -1260,7 +1261,17 @@ class ServerArgs:
                 # use bf16 for mxfp4 triton kernels
                 self.dtype = "bfloat16"
 
-            if self.moe_runner_backend == "auto":
+            # Check if Marlin is explicitly requested for MXFP4
+            import os
+            use_marlin_mxfp4 = os.environ.get("SGLANG_MXFP4_USE_MARLIN", "0").lower() in ("1", "true", "yes")
+            
+            if use_marlin_mxfp4 and is_mxfp4_quant_format:
+                # Force Marlin backend when SGLANG_MXFP4_USE_MARLIN=1
+                self.moe_runner_backend = "marlin"
+                logger.info(
+                    "Using Marlin backend for MXFP4 MoE (SGLANG_MXFP4_USE_MARLIN=1)"
+                )
+            elif self.moe_runner_backend == "auto":
                 if self.enable_piecewise_cuda_graph:
                     self.moe_runner_backend = "auto"
                     logger.warning(

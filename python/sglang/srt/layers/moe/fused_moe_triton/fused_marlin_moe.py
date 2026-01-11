@@ -352,8 +352,6 @@ def fused_marlin_moe_mxfp4(
         topk_ids,
         block_size_m,
         global_num_experts,
-        expert_map,
-        ignore_invalid_experts=True,
     )
 
     if workspace is None:
