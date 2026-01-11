@@ -73,6 +73,29 @@ class MarlinMoeQuantInfo(MoeQuantInfo):
     expert_map: Optional[torch.Tensor] = None
 
 
+@dataclass
+class MarlinMxfp4MoeQuantInfo(MoeQuantInfo):
+    """Quantization payload for MXFP4 quantized weights with Marlin backend."""
+
+    w13_qweight: torch.Tensor  # FP4 packed weights [E, 2*N, K//2]
+    w2_qweight: torch.Tensor  # FP4 packed weights [E, K, N//2]
+    w13_scales: torch.Tensor  # float8_e8m0fnu scales
+    w2_scales: torch.Tensor  # float8_e8m0fnu scales
+    
+    # Bias tensors (optional)
+    w13_bias: Optional[torch.Tensor] = None
+    w2_bias: Optional[torch.Tensor] = None
+    
+    # Expert map for expert parallelism (optional)
+    expert_map: Optional[torch.Tensor] = None
+    
+    # Global number of experts
+    global_num_experts: int = -1
+    
+    # Activation function name
+    activation: str = "silu"
+
+
 @register_fused_func("none", "marlin")
 def fused_experts_none_to_marlin(
     dispatch_output: StandardDispatchOutput,
@@ -118,6 +141,57 @@ def fused_experts_none_to_marlin(
         is_k_full=quant_info.is_k_full,
         inplace=runner_config.inplace,
         routed_scaling_factor=runner_config.routed_scaling_factor,
+    ).to(hidden_states.dtype)
+
+    return StandardCombineInput(
+        hidden_states=output,
+    )
+
+
+@register_fused_func("none", "marlin_mxfp4")
+def fused_experts_none_to_marlin_mxfp4(
+    dispatch_output: StandardDispatchOutput,
+    quant_info: MarlinMxfp4MoeQuantInfo,
+    runner_config: MoeRunnerConfig,
+) -> StandardCombineInput:
+    """Fused MoE kernel for MXFP4 weights using Marlin backend."""
+    global MARLIN_MOE_WORKSPACE
+    from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
+        fused_marlin_moe_mxfp4,
+    )
+    from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
+    from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+        marlin_make_workspace_new,
+    )
+
+    hidden_states = dispatch_output.hidden_states
+    topk_output = dispatch_output.topk_output
+
+    if (
+        MARLIN_MOE_WORKSPACE is None
+        or MARLIN_MOE_WORKSPACE.device != hidden_states.device
+    ):
+        MARLIN_MOE_WORKSPACE = marlin_make_workspace_new(
+            hidden_states.device, max_blocks_per_sm=4
+        )
+
+    output = fused_marlin_moe_mxfp4(
+        hidden_states=hidden_states,
+        w1=quant_info.w13_qweight,
+        w2=quant_info.w2_qweight,
+        w1_bias=quant_info.w13_bias,
+        w2_bias=quant_info.w2_bias,
+        w1_scale=quant_info.w13_scales,
+        w2_scale=quant_info.w2_scales,
+        router_logits=topk_output.router_logits,
+        topk_weights=topk_output.topk_weights,
+        topk_ids=topk_output.topk_ids,
+        global_num_experts=quant_info.global_num_experts,
+        activation=quant_info.activation,
+        apply_router_weight_on_input=False,
+        expert_map=quant_info.expert_map,
+        workspace=MARLIN_MOE_WORKSPACE,
+        inplace=runner_config.inplace,
     ).to(hidden_states.dtype)
 
     return StandardCombineInput(
