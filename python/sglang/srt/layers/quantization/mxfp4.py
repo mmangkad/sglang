@@ -766,7 +766,6 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 expert_map=getattr(layer, 'expert_map', None),
                 global_num_experts=layer.num_experts if hasattr(layer, 'num_experts') else -1,
                 activation=self.moe_runner_config.activation if hasattr(self, 'moe_runner_config') else "silu",
-                original_hidden_size=original_hidden_size,
             )
             return self.runner.run(dispatch_output, quant_info)
 
