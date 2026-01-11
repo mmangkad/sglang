@@ -22,6 +22,31 @@ def get_scalar_type(num_bits: int, has_zp: bool, is_mxfp4: bool = False):
         return scalar_types.uint4b8 if num_bits == 4 else scalar_types.uint8b128
 
 
+def swigluoai_and_mul_pytorch(
+    output: torch.Tensor, input: torch.Tensor, alpha: float = 1.702, limit: float = 7.0
+) -> None:
+    """
+    SwigluOAI activation for split format input [gate, up].
+
+    The input tensor has shape [..., 2*d] where the first d elements are gate
+    and the last d elements are up. Output has shape [..., d].
+
+    Formula: gate * sigmoid(gate * alpha) * (up + 1)
+    with clamping: gate clamped to max=limit, up clamped to [-limit, limit]
+    """
+    d = input.shape[-1] // 2
+    gate = input[..., :d]
+    up = input[..., d:]
+
+    # Clamp values
+    clamped_gate = gate.clamp(max=limit)
+    clamped_up = up.clamp(min=-limit, max=limit)
+
+    # Compute swigluoai: gate * sigmoid(gate * alpha) * (up + 1)
+    glu = clamped_gate * torch.sigmoid(clamped_gate * alpha)
+    output.copy_(glu * (clamped_up + 1))
+
+
 def default_activation_func(
     activation: str, output: torch.Tensor, input: torch.Tensor
 ) -> None:
@@ -29,10 +54,10 @@ def default_activation_func(
     if activation == "silu":
         silu_and_mul(input, output)
     elif activation == "swigluoai":
-        # swigluoai: GELU(alpha * x) * gate
-        # For now, use silu_and_mul as fallback since swigluoai kernel may not exist
-        # TODO: Add proper swigluoai_and_mul kernel support
-        silu_and_mul(input, output)
+        # SwigluOAI activation used by GPT-OSS models
+        # Formula: gate * sigmoid(gate * alpha) * (up + 1) with clamping
+        # Default alpha=1.702, limit=7.0
+        swigluoai_and_mul_pytorch(output, input, alpha=1.702, limit=7.0)
     else:
         raise ValueError(
             f"Unsupported activation: {activation}. "
@@ -169,10 +194,9 @@ def fused_marlin_moe(
     intermediate_cache3 = intermediate_cache13[: M * topk_ids.shape[1] * K]
     intermediate_cache3 = intermediate_cache3.view(-1, K)
 
-    use_atomic_add = (
-        hidden_states.dtype == torch.half
-        or torch.cuda.get_device_capability(hidden_states.device)[0] >= 9
-    )
+    # Note: vLLM always uses use_atomic_add=False for Marlin MoE
+    # This provides more consistent numerical behavior across devices
+    use_atomic_add = False
 
     intermediate_cache1 = torch.ops.sgl_kernel.moe_wna16_marlin_gemm.default(
         hidden_states,
