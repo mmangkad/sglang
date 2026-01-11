@@ -3,7 +3,6 @@ from typing import Callable, Optional
 import torch
 
 from sglang.srt.utils import is_cuda
-from sglang.srt.utils.custom_op import register_custom_op
 
 _is_cuda = is_cuda()
 
@@ -41,7 +40,6 @@ def default_activation_func(
         )
 
 
-@register_custom_op(out_shape="hidden_states")
 def fused_marlin_moe(
     hidden_states: torch.Tensor,
     w1: torch.Tensor,
