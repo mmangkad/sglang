@@ -1266,10 +1266,18 @@ class ServerArgs:
                     logger.warning(
                         "Enable piecewise CUDA graph, enabling auto MOE kernel."
                     )
-                elif is_blackwell_supported() and is_mxfp4_quant_format:
+                elif is_sm120_supported() and is_mxfp4_quant_format:
+                    # SM120 (Blackwell RTX 50-series) uses Marlin backend for MXFP4
+                    # FlashInfer MXFP4 kernels are NOT optimized for SM120
+                    self.moe_runner_backend = "marlin"
+                    logger.warning(
+                        "Detected SM120 (Blackwell RTX 50-series) and MXFP4 quantization format for GPT-OSS model, enabling Marlin MOE kernel."
+                    )
+                elif is_sm100_supported() and is_mxfp4_quant_format:
+                    # SM100 (B200) uses FlashInfer MXFP4 kernels
                     self.moe_runner_backend = "flashinfer_mxfp4"
                     logger.warning(
-                        "Detected SM100 and MXFP4 quantization format for GPT-OSS model, enabling FlashInfer MXFP4 MOE kernel."
+                        "Detected SM100 (B200) and MXFP4 quantization format for GPT-OSS model, enabling FlashInfer MXFP4 MOE kernel."
                     )
                 elif self.ep_size == 1 and is_triton_kernels_available():
                     self.moe_runner_backend = "triton_kernel"

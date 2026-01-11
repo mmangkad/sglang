@@ -120,8 +120,21 @@ def prepare_moe_fp4_layer_for_marlin(
     group_size = 16 if is_nvfp4 else 32
 
     e = layer.num_local_experts
-    k = layer.hidden_size
-    n = layer.intermediate_size_per_partition
+    
+    # Get actual dimensions from weight tensors (may be padded)
+    # w13_weight shape: (e, 2*n, k//2) where n=intermediate_size, k=hidden_size
+    # w2_weight shape: (e, k, n//2)
+    w13_shape = layer.w13_weight.shape
+    w2_shape = layer.w2_weight.shape
+    
+    # Extract dimensions from actual tensor shapes
+    # w13: (experts, 2*intermediate_size, hidden_size//2)
+    k = w13_shape[2] * 2  # hidden_size = (hidden_size//2) * 2
+    n = w13_shape[1] // 2  # intermediate_size = (2*intermediate_size) / 2
+    
+    # Store for use during inference
+    layer.marlin_hidden_size = k
+    layer.marlin_intermediate_size = n
 
     # WORKSPACE
     device = layer.w13_weight.device
@@ -140,10 +153,15 @@ def prepare_moe_fp4_layer_for_marlin(
         else:
             size_n, size_k = k, n
 
-        assert weight.shape == (e, size_n, size_k // 2), (
-            f"Expected shape ({e}, {size_n}, {size_k // 2}), "
-            f"got {weight.shape} for {name}"
-        )
+        if weight.shape != (e, size_n, size_k // 2):
+            log_info_on_rank0(
+                logger,
+                f"Weight {name} shape {weight.shape} differs from expected "
+                f"({e}, {size_n}, {size_k // 2}), adjusting dimensions..."
+            )
+            # Update dimensions based on actual weight shape
+            size_n = weight.shape[1]
+            size_k = weight.shape[2] * 2
 
         for i in range(e):
             qweight = weight[i].view(torch.int32).T.contiguous()
@@ -163,7 +181,7 @@ def prepare_moe_fp4_layer_for_marlin(
         setattr(layer, name, weight)
 
     # WEIGHT SCALES
-    # Permute scales
+    # Permute scales - get actual dimensions from scale tensor shapes
     for name in ["w13", "w2"]:
         scales = getattr(layer, name + "_weight_scale")
         if not is_nvfp4:
@@ -171,10 +189,10 @@ def prepare_moe_fp4_layer_for_marlin(
         scales = scales.to(param_dtype)
 
         tensor_list = []
-        if "w13" in name:
-            size_n, size_k = n * 2, k
-        else:
-            size_n, size_k = k, n
+        # Get actual dimensions from scale tensor shapes
+        # scales shape: (experts, size_n, size_k // group_size)
+        size_n = scales.shape[1]
+        size_k = scales.shape[2] * group_size
 
         for i in range(e):
             scale = scales[i].T
