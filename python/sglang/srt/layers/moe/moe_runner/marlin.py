@@ -75,12 +75,20 @@ class MarlinMoeQuantInfo(MoeQuantInfo):
 
 @dataclass
 class MarlinMxfp4MoeQuantInfo(MoeQuantInfo):
-    """Quantization payload for MXFP4 quantized weights with Marlin backend."""
+    """Quantization payload for MXFP4 quantized weights with Marlin backend.
+    
+    After Marlin repacking (gptq_marlin_repack), weight shapes are:
+    - w13_qweight: [E, K // 16, 4*N] where K=hidden_size, N=intermediate_size
+    - w2_qweight: [E, N // 16, 2*K]
+    
+    The tile_size is 16 and pack_factor is 8 for 4-bit weights.
+    To get dimensions: K = w13.size(1) * 16, N = w2.size(1) * 16
+    """
 
-    w13_qweight: torch.Tensor  # FP4 packed weights [E, 2*N, K//2]
-    w2_qweight: torch.Tensor  # FP4 packed weights [E, K, N//2]
-    w13_scales: torch.Tensor  # float8_e8m0fnu scales
-    w2_scales: torch.Tensor  # float8_e8m0fnu scales
+    w13_qweight: torch.Tensor  # Marlin repacked: [E, K//16, 4*N]
+    w2_qweight: torch.Tensor   # Marlin repacked: [E, N//16, 2*K]
+    w13_scales: torch.Tensor   # float8_e8m0fnu scales
+    w2_scales: torch.Tensor    # float8_e8m0fnu scales
     
     # Bias tensors (optional)
     w13_bias: Optional[torch.Tensor] = None

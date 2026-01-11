@@ -1267,9 +1267,16 @@ class ServerArgs:
             
             if use_marlin_mxfp4 and is_mxfp4_quant_format:
                 # Force Marlin backend when SGLANG_MXFP4_USE_MARLIN=1
+                # This requires triton attention backend as a strict pair requirement (like vLLM on SM120)
                 self.moe_runner_backend = "marlin"
+                if self.attention_backend != "triton":
+                    logger.info(
+                        f"Overriding attention_backend from '{self.attention_backend}' to 'triton' "
+                        "(required for Marlin MXFP4 backend)"
+                    )
+                    self.attention_backend = "triton"
                 logger.info(
-                    "Using Marlin backend for MXFP4 MoE (SGLANG_MXFP4_USE_MARLIN=1)"
+                    "Using Marlin backend for MXFP4 MoE with Triton attention backend (SGLANG_MXFP4_USE_MARLIN=1)"
                 )
             elif self.moe_runner_backend == "auto":
                 if self.enable_piecewise_cuda_graph:

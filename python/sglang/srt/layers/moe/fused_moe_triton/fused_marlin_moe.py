@@ -291,10 +291,15 @@ def fused_marlin_moe_mxfp4(
     This function computes a Mixture of Experts (MoE) layer using MXFP4
     quantized weights (4-bit float with 32-element group size).
 
+    After gptq_marlin_repack, weight shapes change from original FP4 packed format
+    to Marlin tiled format with tile_size=16 and pack_factor=8:
+    - w1: [E, K//16, 4*N] where K=hidden_size, N=intermediate_size
+    - w2: [E, N//16, 2*K]
+
     Parameters:
     - hidden_states (torch.Tensor): The input tensor to the MoE layer [M, K].
-    - w1 (torch.Tensor): The first set of expert weights (gate+up proj) [E, 2*N, K//2].
-    - w2 (torch.Tensor): The second set of expert weights (down proj) [E, K, N//2].
+    - w1 (torch.Tensor): Marlin repacked gate+up weights [E, K//16, 4*N].
+    - w2 (torch.Tensor): Marlin repacked down weights [E, N//16, 2*K].
     - w1_bias (Optional[torch.Tensor]): Bias for w1 [E, 2*N].
     - w2_bias (Optional[torch.Tensor]): Bias for w2 [E, K].
     - w1_scale (torch.Tensor): Scale for w1 quantization.
@@ -326,17 +331,25 @@ def fused_marlin_moe_mxfp4(
     assert hidden_states.ndim == 2
     M, K = hidden_states.size()
     E = w1.size(0)
-    # For MXFP4, w2 has shape [E, K, N//2] where the last dim is packed
-    # N is the intermediate size
-    N = w2.size(2) * 2  # Unpack the FP4 dimension
+    
+    # After Marlin repacking, the weight shapes are:
+    # w1: [E, K // 16, 4*N] - where tile_size=16, pack_factor=8
+    # w2: [E, N // 16, 2*K] - after gptq_marlin_repack
+    # So: K = w1.size(1) * 16, and N = w2.size(1) * 16
+    MARLIN_TILE_SIZE = 16
+    N = w2.size(1) * MARLIN_TILE_SIZE  # Intermediate size
     topk = topk_ids.size(1)
 
-    # Validate shapes
+    # Validate shapes (similar to vLLM)
     assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     assert hidden_states.dtype in [torch.float16, torch.bfloat16]
     assert topk_weights.dtype == torch.float32
+    assert w1.size(1) * MARLIN_TILE_SIZE == K, (
+        f"Hidden size mismatch w1: w1.size(1)={w1.size(1)}, "
+        f"expected K // tile_size = {K // MARLIN_TILE_SIZE}"
+    )
 
     # M block size selection logic
     for block_size_m in [8, 16, 32, 48, 64]:
