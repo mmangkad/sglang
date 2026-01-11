@@ -105,9 +105,33 @@ def fused_experts_none_to_marlin(
     """Fused MoE kernel for Marlin backend supporting both regular quantization and MXFP4."""
     global MARLIN_MOE_WORKSPACE
     from sglang.srt.layers.moe.token_dispatcher.standard import StandardCombineInput
+    from sglang.srt.layers.moe.topk import (
+        BypassedTopKOutput,
+        StandardTopKOutput,
+        TopKOutputChecker,
+        fused_topk,
+    )
 
     hidden_states = dispatch_output.hidden_states
     topk_output = dispatch_output.topk_output
+
+    # Handle different topk_output formats
+    if TopKOutputChecker.format_is_bypassed(topk_output):
+        # BypassedTopKOutput - need to compute topk_weights and topk_ids from router_logits
+        topk_weights, topk_ids = fused_topk(
+            hidden_states=hidden_states,
+            gating_output=topk_output.router_logits,
+            topk=topk_output.topk_config.top_k,
+            renormalize=topk_output.topk_config.renormalize,
+        )
+        router_logits = topk_output.router_logits
+    elif TopKOutputChecker.format_is_standard(topk_output):
+        # StandardTopKOutput - already has topk_weights and topk_ids
+        topk_weights = topk_output.topk_weights
+        topk_ids = topk_output.topk_ids
+        router_logits = topk_output.router_logits
+    else:
+        raise ValueError(f"Unsupported topk_output format: {type(topk_output)}")
 
     # Check if this is MXFP4 quantization
     if isinstance(quant_info, MarlinMxfp4MoeQuantInfo):
@@ -135,9 +159,9 @@ def fused_experts_none_to_marlin(
             w2_bias=quant_info.w2_bias,
             w1_scale=quant_info.w13_scales,
             w2_scale=quant_info.w2_scales,
-            router_logits=topk_output.router_logits,
-            topk_weights=topk_output.topk_weights,
-            topk_ids=topk_output.topk_ids,
+            router_logits=router_logits,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
             global_num_experts=quant_info.global_num_experts,
             activation=quant_info.activation,
             apply_router_weight_on_input=False,
@@ -172,9 +196,9 @@ def fused_experts_none_to_marlin(
             w2=quant_info.w2_qweight,
             w1_scale=quant_info.w13_scales,
             w2_scale=quant_info.w2_scales,
-            gating_output=topk_output.router_logits,
-            topk_weights=topk_output.topk_weights,
-            topk_ids=topk_output.topk_ids,
+            gating_output=router_logits,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
             expert_map=quant_info.expert_map,
             g_idx1=quant_info.w13_g_idx,
             g_idx2=quant_info.w2_g_idx,
