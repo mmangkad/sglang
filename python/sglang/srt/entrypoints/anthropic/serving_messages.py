@@ -37,10 +37,11 @@ from sglang.srt.entrypoints.openai.protocol import (
     ChatCompletionResponse,
     ChatCompletionStreamResponse,
     ErrorResponse,
+    Function,
     StreamOptions,
     Tool,
     ToolChoice,
-    Function,
+    ToolChoiceFuncName,
 )
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 
@@ -51,8 +52,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def ensure_toolu_id(tool_id: Optional[str]) -> str:
+    """Ensure tool ID is present, generate one if not provided."""
+    if not tool_id:
+        return f"toolu_{uuid.uuid4().hex[:24]}"
+    return tool_id
+
 def wrap_sse_event(data: str, event: str) -> str:
-    """Wrap data with SSE event format"""
+    """Wrap data with SSE event format for Anthropic API"""
     return f"event: {event}\ndata: {data}\n\n"
 
 
@@ -162,9 +169,12 @@ class AnthropicServingMessages:
                                         texts.append(item.get("text", ""))
                                 tool_content = "\n".join(texts)
                             
+                            # Support both tool_use_id (Anthropic) and id (vLLM-style)
+                            tool_call_id = block.tool_use_id or block.id or ""
+                            
                             openai_messages.append({
                                 "role": "tool",
-                                "tool_call_id": block.tool_use_id or "",
+                                "tool_call_id": tool_call_id,
                                 "content": tool_content,
                             })
                         else:
@@ -218,10 +228,10 @@ class AnthropicServingMessages:
 
         # Handle streaming options
         if anthropic_request.stream:
-            request_dict["stream_options"] = {
-                "include_usage": True,
-                "continuous_usage_stats": True,
-            }
+            request_dict["stream_options"] = StreamOptions(
+                include_usage=True,
+                continuous_usage_stats=True,
+            )
 
         # Handle tool choice
         if anthropic_request.tool_choice is not None:
@@ -239,23 +249,23 @@ class AnthropicServingMessages:
                 request_dict["tool_choice"] = "none"
             elif choice_type == "tool":
                 tool_name = tool_choice.get("name") if isinstance(tool_choice, dict) else tool_choice.name
-                request_dict["tool_choice"] = {
-                    "type": "function",
-                    "function": {"name": tool_name},
-                }
+                request_dict["tool_choice"] = ToolChoice(
+                    type="function",
+                    function=ToolChoiceFuncName(name=tool_name),
+                )
 
         # Handle tools
         if anthropic_request.tools:
             tools = []
             for tool in anthropic_request.tools:
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.input_schema,
-                    },
-                })
+                tools.append(Tool(
+                    type="function",
+                    function=Function(
+                        name=tool.name,
+                        description=tool.description,
+                        parameters=tool.input_schema,
+                    ),
+                ))
             request_dict["tools"] = tools
             # Set default tool choice if not specified
             if "tool_choice" not in request_dict:
@@ -277,17 +287,21 @@ class AnthropicServingMessages:
         # Get the first choice (Anthropic only returns one)
         choice = openai_response.choices[0] if openai_response.choices else None
 
-        if choice:
-            # Add text content
-            if choice.message.content:
-                content.append(
-                    AnthropicResponseContentBlock(
-                        type="text",
-                        text=choice.message.content,
-                    )
-                )
+        # Map finish reason
+        stop_reason = None
+        if choice and choice.finish_reason:
+            stop_reason = self.stop_reason_map.get(choice.finish_reason, "end_turn")
 
-            # Add tool calls
+        if choice:
+            # Always add text content first (even if empty)
+            content.append(
+                AnthropicResponseContentBlock(
+                    type="text",
+                    text=choice.message.content if choice.message.content else "",
+                )
+            )
+
+            # Add tool calls after text
             if choice.message.tool_calls:
                 for tool_call in choice.message.tool_calls:
                     try:
@@ -298,20 +312,15 @@ class AnthropicServingMessages:
                     content.append(
                         AnthropicResponseContentBlock(
                             type="tool_use",
-                            id=tool_call.id or f"toolu_{uuid.uuid4().hex[:24]}",
+                            id=ensure_toolu_id(tool_call.id),
                             name=tool_call.function.name,
                             input=tool_input,
                         )
                     )
 
-        # If no content was added, add an empty text block
+        # If no content was added at all (shouldn't happen), add an empty text block
         if not content:
             content.append(AnthropicResponseContentBlock(type="text", text=""))
-
-        # Map finish reason
-        stop_reason = None
-        if choice and choice.finish_reason:
-            stop_reason = self.stop_reason_map.get(choice.finish_reason, "end_turn")
 
         return AnthropicMessagesResponse(
             id=f"msg_{openai_response.id}" if not openai_response.id.startswith("msg_") else openai_response.id,
@@ -527,7 +536,7 @@ class AnthropicServingMessages:
                             )
 
                     # Handle tool calls
-                    elif choice.delta and choice.delta.tool_calls:
+                    elif choice.delta and choice.delta.tool_calls and len(choice.delta.tool_calls) > 0:
                         for tool_call in choice.delta.tool_calls:
                             # New tool call starting
                             if tool_call.id is not None:
@@ -544,14 +553,15 @@ class AnthropicServingMessages:
                                     content_block_started = False
                                     content_block_index += 1
 
-                                # Start new tool use block
-                                current_tool_call_id = tool_call.id
+                                # Start new tool use block with proper Anthropic ID format
+                                tool_use_id = ensure_toolu_id(tool_call.id)
+                                current_tool_call_id = tool_use_id
                                 start_block_event = AnthropicStreamEvent(
                                     type="content_block_start",
                                     index=content_block_index,
                                     content_block=AnthropicContentBlockStart(
                                         type="tool_use",
-                                        id=tool_call.id,
+                                        id=tool_use_id,
                                         name=tool_call.function.name if tool_call.function else "",
                                         input={},
                                     ),

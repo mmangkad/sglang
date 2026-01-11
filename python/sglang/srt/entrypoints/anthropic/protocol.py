@@ -285,7 +285,7 @@ class AnthropicDelta(BaseModel):
 
 
 class AnthropicContentBlockStart(BaseModel):
-    """Content block for content_block_start event"""
+    """Content block for content_block_start event - same structure as AnthropicContentBlock"""
 
     type: Literal["text", "tool_use", "thinking"]
     # Text block
