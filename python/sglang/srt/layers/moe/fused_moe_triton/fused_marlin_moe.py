@@ -329,7 +329,7 @@ def fused_marlin_moe_mxfp4(
         activation_func = default_activation_func
 
     assert hidden_states.ndim == 2
-    M, K = hidden_states.size()
+    M, input_K = hidden_states.size()
     E = w1.size(0)
     
     # After Marlin repacking, the weight shapes are:
@@ -337,19 +337,33 @@ def fused_marlin_moe_mxfp4(
     # w2: [E, N // 16, 2*K] - after gptq_marlin_repack
     # So: K = w1.size(1) * 16, and N = w2.size(1) * 16
     MARLIN_TILE_SIZE = 16
+    
+    # Derive K and N from the weight shapes (weights may have been padded for alignment)
+    K = w1.size(1) * MARLIN_TILE_SIZE  # Hidden size (may be padded)
     N = w2.size(1) * MARLIN_TILE_SIZE  # Intermediate size
     topk = topk_ids.size(1)
 
-    # Validate shapes (similar to vLLM)
+    # Handle input padding if weights were padded for alignment
+    needs_unpad = False
+    original_K = input_K
+    if input_K < K:
+        # Pad hidden_states to match weight dimensions
+        hidden_states = torch.nn.functional.pad(
+            hidden_states, (0, K - input_K), mode="constant", value=0.0
+        )
+        needs_unpad = True
+    elif input_K > K:
+        raise ValueError(
+            f"Input hidden size {input_K} > weight hidden size {K}. "
+            "This should not happen - check weight preparation."
+        )
+
+    # Validate shapes
     assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     assert hidden_states.dtype in [torch.float16, torch.bfloat16]
     assert topk_weights.dtype == torch.float32
-    assert w1.size(1) * MARLIN_TILE_SIZE == K, (
-        f"Hidden size mismatch w1: w1.size(1)={w1.size(1)}, "
-        f"expected K // tile_size = {K // MARLIN_TILE_SIZE}"
-    )
 
     # M block size selection logic
     for block_size_m in [8, 16, 32, 48, 64]:
@@ -484,7 +498,12 @@ def fused_marlin_moe_mxfp4(
     if inplace:
         final_output = hidden_states
     else:
-        final_output = torch.empty_like(hidden_states)
+        final_output = torch.empty((M, K), dtype=hidden_states.dtype, device=hidden_states.device)
 
     moe_sum_reduce(output, final_output, 1.0)
+    
+    # Unpad output if input was padded
+    if needs_unpad:
+        final_output = final_output[:, :original_K].contiguous()
+    
     return final_output

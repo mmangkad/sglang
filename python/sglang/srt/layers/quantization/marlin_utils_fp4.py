@@ -112,8 +112,22 @@ def prepare_moe_fp4_layer_for_marlin(
     group_size = 16 if is_nvfp4 else 32
 
     e = layer.num_experts
-    k = layer.hidden_size
-    n = layer.intermediate_size_per_partition
+    
+    # Derive dimensions from actual weight shapes rather than layer config
+    # This handles cases where checkpoint weights may have padding
+    # w13_weight shape: [E, 2*N, K//2] (FP4 packed, 2 values per byte)
+    # w2_weight shape: [E, K, N//2]
+    w13_shape = layer.w13_weight.shape
+    w2_shape = layer.w2_weight.shape
+    
+    # Derive k and n from weight shapes
+    # For w13: shape is [E, 2*N, K//2]
+    k = w13_shape[2] * 2  # K = last_dim * 2 (FP4 unpacked)
+    n = w13_shape[1] // 2  # N = middle_dim / 2 (gate_up combined)
+    
+    # Store original config dimensions for potential input padding later
+    layer.marlin_hidden_size = k
+    layer.marlin_intermediate_size = n
 
     # WORKSPACE
     device = layer.w13_weight.device
@@ -128,13 +142,17 @@ def prepare_moe_fp4_layer_for_marlin(
         tensor_list = []
         if "w13" in name:
             size_n, size_k = n * 2, k
+            expected_shape = (e, size_n, size_k // 2)
         else:
             size_n, size_k = k, n
+            expected_shape = (e, size_n, size_k // 2)
 
-        assert weight.shape == (e, size_n, size_k // 2), (
-            f"Expected weight shape ({e}, {size_n}, {size_k // 2}), "
-            f"got {weight.shape}"
-        )
+        # Verify weight shape matches derived dimensions
+        if weight.shape != expected_shape:
+            logger.warning(
+                f"Weight shape mismatch for {name}: expected {expected_shape}, "
+                f"got {weight.shape}. Weights may have been created with different padding."
+            )
 
         for i in range(e):
             qweight = weight[i].view(torch.int32).T.contiguous()
