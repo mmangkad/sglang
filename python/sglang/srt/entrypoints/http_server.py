@@ -58,6 +58,8 @@ from sglang.srt.entrypoints.engine import (
     run_detokenizer_process,
     run_scheduler_process,
 )
+from sglang.srt.entrypoints.anthropic.protocol import AnthropicMessagesRequest
+from sglang.srt.entrypoints.anthropic.serving_messages import AnthropicServingMessages
 from sglang.srt.entrypoints.ollama.protocol import (
     OllamaChatRequest,
     OllamaGenerateRequest,
@@ -294,6 +296,11 @@ async def lifespan(fast_api_app: FastAPI):
 
     # Initialize Ollama-compatible serving handler
     fast_api_app.state.ollama_serving = OllamaServing(_global_state.tokenizer_manager)
+
+    # Initialize Anthropic-compatible serving handler
+    fast_api_app.state.anthropic_serving_messages = AnthropicServingMessages(
+        _global_state.tokenizer_manager, _global_state.template_manager
+    )
 
     # Launch tool server
     tool_server = None
@@ -1388,6 +1395,22 @@ async def v1_cancel_responses(response_id: str, raw_request: Request):
 async def v1_rerank_request(request: V1RerankReqInput, raw_request: Request):
     """Endpoint for reranking documents based on query relevance."""
     return await raw_request.app.state.openai_serving_rerank.handle_request(
+        request, raw_request
+    )
+
+
+##### Anthropic-compatible API endpoints #####
+
+
+@app.post("/v1/messages", dependencies=[Depends(validate_json_request)])
+async def anthropic_v1_messages(request: AnthropicMessagesRequest, raw_request: Request):
+    """Anthropic-compatible messages endpoint.
+    
+    See https://docs.anthropic.com/en/api/messages for the API specification.
+    This endpoint mimics the Anthropic Messages API, allowing you to use
+    Anthropic-compatible clients with SGLang.
+    """
+    return await raw_request.app.state.anthropic_serving_messages.create_messages(
         request, raw_request
     )
 
