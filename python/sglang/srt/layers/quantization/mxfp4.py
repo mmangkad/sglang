@@ -370,25 +370,24 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
             # - For gate_up_proj: n = 2 * intermediate_size (n % 256 == 0), k = hidden_size (k % 128 == 0)
             # - For down_proj: n = hidden_size (n % 256 == 0), k = intermediate_size (k % 128 == 0)
             #
-            # We pad intermediate_size but NOT hidden_size to avoid mismatch with hidden_states
-            # The model's hidden_size must already be compatible with Marlin requirements
+            # We pad both intermediate_size and hidden_size for the weights.
+            # During inference, we pad hidden_states before the kernel and unpad after.
 
-            # Check hidden_size compatibility
-            if hidden_size % 256 != 0:
-                raise ValueError(
-                    f"Marlin MXFP4 MoE kernel requires hidden_size to be a multiple of 256, "
-                    f"but got hidden_size={hidden_size}. This model may not be compatible "
-                    f"with the Marlin backend on SM120 (Blackwell RTX 50-series)."
-                )
+            # Store original hidden_size for padding/unpadding during inference
+            self.original_hidden_size = hidden_size
 
             # Pad intermediate_size to multiple of 128
             intermediate_size_per_partition_after_pad = round_up(
                 intermediate_size_per_partition, 128
             )
 
-            # Store sizes for layer config (hidden_size is NOT padded)
+            # Pad hidden_size to multiple of 256
+            hidden_size = round_up(hidden_size, 256)
+
+            # Store sizes for layer config
             layer.params_dtype = params_dtype
-            layer.marlin_hidden_size = hidden_size
+            layer.marlin_hidden_size = hidden_size  # Padded value for weights
+            layer.marlin_original_hidden_size = self.original_hidden_size  # Original value
             layer.marlin_intermediate_size = intermediate_size_per_partition_after_pad
         elif _is_sm100_supported:
             if self.use_flashinfer:
@@ -745,21 +744,35 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 fused_marlin_moe,
             )
             from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
-            
+
             topk_weights, topk_ids, _ = topk_output
             router_logits = topk_output.router_logits
-            
+
             # Get or create workspace
             if not hasattr(layer, 'marlin_workspace') or layer.marlin_workspace is None:
                 layer.marlin_workspace = marlin_make_workspace(
                     x.device, max_blocks_per_sm=4
                 )
-            
+
             # Get activation from layer or default to swigluoai for GPT-OSS
             activation = getattr(layer, 'mxfp4_activation', 'swigluoai')
-            
+
+            # Pad hidden_states if needed (when original hidden_size != padded hidden_size)
+            original_hidden_size = getattr(layer, 'marlin_original_hidden_size', x.shape[-1])
+            padded_hidden_size = getattr(layer, 'marlin_hidden_size', x.shape[-1])
+
+            if original_hidden_size != padded_hidden_size:
+                # Pad hidden_states to match weight dimensions
+                x_padded = torch.nn.functional.pad(
+                    x, (0, padded_hidden_size - original_hidden_size), mode='constant', value=0.0
+                )
+                # Also need to pad router_logits if it depends on hidden_size
+                # (router_logits is typically (batch, num_experts) so no padding needed)
+            else:
+                x_padded = x
+
             output = fused_marlin_moe(
-                hidden_states=x,
+                hidden_states=x_padded,
                 w1=layer.w13_weight,
                 w2=layer.w2_weight,
                 w1_scale=layer.w13_weight_scale,
@@ -780,7 +793,11 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 is_mxfp4=True,
                 activation=activation,
             )
-            
+
+            # Unpad output back to original hidden_size
+            if original_hidden_size != padded_hidden_size:
+                output = output[:, :original_hidden_size].contiguous()
+
             return StandardCombineInput(hidden_states=output)
 
         if self.use_flashinfer:
