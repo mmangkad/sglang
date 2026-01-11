@@ -224,7 +224,6 @@ def fused_marlin_moe(
         w1,
         bias1,
         w1_scale,
-        None,  # a_scales
         global_scale1,
         w1_zeros,
         g_idx1,
@@ -234,18 +233,18 @@ def fused_marlin_moe(
         expert_ids,
         num_tokens_post_padded,
         topk_weights,
-        moe_block_size=block_size_m,
-        top_k=topk,
-        mul_topk_weights=apply_router_weight_on_input,
-        is_ep=expert_map is not None,
-        b_q_type_id=quant_type_id,
-        size_m=M,
-        size_n=2 * N,
-        size_k=K,
-        is_k_full=is_k_full,
-        use_atomic_add=False,
-        use_fp32_reduce=True,
-        is_zp_float=False,
+        block_size_m,
+        topk,
+        apply_router_weight_on_input,
+        expert_map is not None,
+        quant_type_id,
+        M,
+        2 * N,
+        K,
+        is_k_full,
+        False,  # use_atomic_add
+        True,   # use_fp32_reduce
+        False,  # is_zp_float
     )
 
     # Apply activation function
@@ -266,7 +265,6 @@ def fused_marlin_moe(
         w2,
         bias2,
         w2_scale,
-        None,  # a_scales
         global_scale2,
         w2_zeros,
         g_idx2,
@@ -276,18 +274,18 @@ def fused_marlin_moe(
         expert_ids,
         num_tokens_post_padded,
         topk_weights,
-        moe_block_size=block_size_m,
-        top_k=1,
-        mul_topk_weights=not apply_router_weight_on_input,
-        is_ep=expert_map is not None,
-        b_q_type_id=quant_type_id,
-        size_m=M * topk,
-        size_n=K,
-        size_k=N,
-        is_k_full=is_k_full,
-        use_atomic_add=False,
-        use_fp32_reduce=True,
-        is_zp_float=False,
+        block_size_m,
+        1,  # top_k
+        not apply_router_weight_on_input,
+        expert_map is not None,
+        quant_type_id,
+        M * topk,
+        K,
+        N,
+        is_k_full,
+        False,  # use_atomic_add
+        True,   # use_fp32_reduce
+        False,  # is_zp_float
     )
 
     # Reshape for reduction
