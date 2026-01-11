@@ -304,9 +304,17 @@ class AnthropicServingMessages:
             # Add tool calls after text
             if choice.message.tool_calls:
                 for tool_call in choice.message.tool_calls:
-                    try:
-                        tool_input = json.loads(tool_call.function.arguments or "{}")
-                    except json.JSONDecodeError:
+                    # Handle arguments - could be str or dict
+                    args = tool_call.function.arguments
+                    if isinstance(args, dict):
+                        tool_input = args
+                    elif isinstance(args, str):
+                        try:
+                            tool_input = json.loads(args) if args else {}
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse tool arguments as JSON: {args[:200] if args else 'None'}")
+                            tool_input = {}
+                    else:
                         tool_input = {}
 
                     content.append(
@@ -402,8 +410,6 @@ class AnthropicServingMessages:
         model_name = None
         input_tokens = 0
         output_tokens = 0
-        current_tool_call_id = None
-        tool_call_in_progress = False
 
         try:
             async for chunk_bytes in openai_stream:
@@ -427,7 +433,7 @@ class AnthropicServingMessages:
                     try:
                         openai_chunk = ChatCompletionStreamResponse.model_validate_json(data_str)
                     except Exception as e:
-                        logger.debug(f"Failed to parse OpenAI chunk: {e}")
+                        logger.warning(f"Failed to parse OpenAI chunk: {e}, data: {data_str[:200]}")
                         continue
 
                     # Track message ID and model
@@ -460,8 +466,8 @@ class AnthropicServingMessages:
                         )
                         continue
 
-                    # Handle empty choices (usage info chunk)
-                    if not openai_chunk.choices:
+                    # Handle empty choices (usage info chunk at end)
+                    if not openai_chunk.choices or len(openai_chunk.choices) == 0:
                         if openai_chunk.usage:
                             input_tokens = openai_chunk.usage.prompt_tokens or input_tokens
                             output_tokens = openai_chunk.usage.completion_tokens or output_tokens
@@ -518,7 +524,6 @@ class AnthropicServingMessages:
                                 "content_block_start"
                             )
                             content_block_started = True
-                            tool_call_in_progress = False
 
                         # Send content delta if non-empty
                         if choice.delta.content:
@@ -534,59 +539,90 @@ class AnthropicServingMessages:
                                 delta_event.model_dump_json(exclude_unset=True, exclude_none=True),
                                 "content_block_delta"
                             )
+                        continue
 
                     # Handle tool calls
-                    elif choice.delta and choice.delta.tool_calls and len(choice.delta.tool_calls) > 0:
-                        for tool_call in choice.delta.tool_calls:
-                            # New tool call starting
-                            if tool_call.id is not None:
-                                # Close previous content block if open
-                                if content_block_started:
-                                    stop_block_event = AnthropicStreamEvent(
-                                        type="content_block_stop",
+                    if choice.delta and choice.delta.tool_calls and len(choice.delta.tool_calls) > 0:
+                        tool_call = choice.delta.tool_calls[0]
+                        
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug(f"Tool call chunk: id={tool_call.id}, name={tool_call.function.name if tool_call.function else None}, args={tool_call.function.arguments[:100] if tool_call.function and tool_call.function.arguments else None}")
+                        
+                        # New tool call starting (has id)
+                        if tool_call.id is not None:
+                            # Close previous content block if open
+                            if content_block_started:
+                                stop_block_event = AnthropicStreamEvent(
+                                    type="content_block_stop",
+                                    index=content_block_index,
+                                )
+                                yield wrap_sse_event(
+                                    stop_block_event.model_dump_json(exclude_unset=True, exclude_none=True),
+                                    "content_block_stop"
+                                )
+                                content_block_started = False
+                                content_block_index += 1
+
+                            # Start new tool use block
+                            tool_use_id = ensure_toolu_id(tool_call.id)
+                            tool_name = tool_call.function.name if tool_call.function else ""
+                            
+                            start_block_event = AnthropicStreamEvent(
+                                type="content_block_start",
+                                index=content_block_index,
+                                content_block=AnthropicContentBlockStart(
+                                    type="tool_use",
+                                    id=tool_use_id,
+                                    name=tool_name,
+                                    input={},
+                                ),
+                            )
+                            yield wrap_sse_event(
+                                start_block_event.model_dump_json(exclude_unset=True, exclude_none=True),
+                                "content_block_start"
+                            )
+                            content_block_started = True
+                            
+                            # Also send initial arguments if present in the first chunk
+                            if tool_call.function and tool_call.function.arguments:
+                                args = tool_call.function.arguments
+                                if isinstance(args, dict):
+                                    args = json.dumps(args)
+                                if args:  # Only send if non-empty
+                                    delta_event = AnthropicStreamEvent(
+                                        type="content_block_delta",
                                         index=content_block_index,
+                                        delta=AnthropicDelta(
+                                            type="input_json_delta",
+                                            partial_json=args,
+                                        ),
                                     )
                                     yield wrap_sse_event(
-                                        stop_block_event.model_dump_json(exclude_unset=True, exclude_none=True),
-                                        "content_block_stop"
+                                        delta_event.model_dump_json(exclude_unset=True, exclude_none=True),
+                                        "content_block_delta"
                                     )
-                                    content_block_started = False
-                                    content_block_index += 1
-
-                                # Start new tool use block with proper Anthropic ID format
-                                tool_use_id = ensure_toolu_id(tool_call.id)
-                                current_tool_call_id = tool_use_id
-                                start_block_event = AnthropicStreamEvent(
-                                    type="content_block_start",
-                                    index=content_block_index,
-                                    content_block=AnthropicContentBlockStart(
-                                        type="tool_use",
-                                        id=tool_use_id,
-                                        name=tool_call.function.name if tool_call.function else "",
-                                        input={},
-                                    ),
-                                )
-                                yield wrap_sse_event(
-                                    start_block_event.model_dump_json(exclude_unset=True, exclude_none=True),
-                                    "content_block_start"
-                                )
-                                content_block_started = True
-                                tool_call_in_progress = True
-
-                            # Tool call arguments delta
-                            elif tool_call.function and tool_call.function.arguments:
-                                delta_event = AnthropicStreamEvent(
-                                    type="content_block_delta",
-                                    index=content_block_index,
-                                    delta=AnthropicDelta(
-                                        type="input_json_delta",
-                                        partial_json=tool_call.function.arguments,
-                                    ),
-                                )
-                                yield wrap_sse_event(
-                                    delta_event.model_dump_json(exclude_unset=True, exclude_none=True),
-                                    "content_block_delta"
-                                )
+                        else:
+                            # Tool call arguments delta (no id means it's a continuation)
+                            if tool_call.function and tool_call.function.arguments:
+                                # Handle arguments - could be str or dict
+                                args = tool_call.function.arguments
+                                if isinstance(args, dict):
+                                    args = json.dumps(args)
+                                
+                                if args:  # Only send if non-empty
+                                    delta_event = AnthropicStreamEvent(
+                                        type="content_block_delta",
+                                        index=content_block_index,
+                                        delta=AnthropicDelta(
+                                            type="input_json_delta",
+                                            partial_json=args,
+                                        ),
+                                    )
+                                    yield wrap_sse_event(
+                                        delta_event.model_dump_json(exclude_unset=True, exclude_none=True),
+                                        "content_block_delta"
+                                    )
+                        continue
 
         except Exception as e:
             logger.exception("Error in stream converter")
