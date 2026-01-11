@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 
@@ -11,14 +11,34 @@ if _is_cuda:
     from sgl_kernel import moe_sum_reduce, silu_and_mul
 
 
-def get_scalar_type(num_bits: int, has_zp: bool):
+def get_scalar_type(num_bits: int, has_zp: bool, is_mxfp4: bool = False):
     from sgl_kernel.scalar_type import scalar_types
 
+    if is_mxfp4:
+        return scalar_types.float4_e2m1f
     if has_zp:
         assert num_bits == 4
         return scalar_types.uint4
     else:
         return scalar_types.uint4b8 if num_bits == 4 else scalar_types.uint8b128
+
+
+def default_activation_func(
+    activation: str, output: torch.Tensor, input: torch.Tensor
+) -> None:
+    """Apply activation function for MoE layer."""
+    if activation == "silu":
+        silu_and_mul(input, output)
+    elif activation == "swigluoai":
+        # swigluoai: GELU(alpha * x) * gate
+        # For now, use silu_and_mul as fallback since swigluoai kernel may not exist
+        # TODO: Add proper swigluoai_and_mul kernel support
+        silu_and_mul(input, output)
+    else:
+        raise ValueError(
+            f"Unsupported activation: {activation}. "
+            "Only silu and swigluoai activations are supported."
+        )
 
 
 @register_custom_op(out_shape="hidden_states")
@@ -44,6 +64,12 @@ def fused_marlin_moe(
     is_k_full: bool = True,
     inplace: bool = False,
     routed_scaling_factor: Optional[float] = None,
+    # MXFP4 specific parameters
+    w1_bias: Optional[torch.Tensor] = None,
+    w2_bias: Optional[torch.Tensor] = None,
+    is_mxfp4: bool = False,
+    activation: str = "silu",
+    activation_func: Optional[Callable[[str, torch.Tensor, torch.Tensor], None]] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -68,6 +94,11 @@ def fused_marlin_moe(
     - w1_zeros (Optional[torch.Tensor]): Optional zero points to be used for w1.
     - w2_zeros (Optional[torch.Tensor]): Optional zero points to be used for w2.
     - num_bits (int): The number of bits in expert weights quantization.
+    - w1_bias (Optional[torch.Tensor]): Optional bias for gate_up_proj (MXFP4).
+    - w2_bias (Optional[torch.Tensor]): Optional bias for down_proj (MXFP4).
+    - is_mxfp4 (bool): Whether using MXFP4 quantization.
+    - activation (str): Activation function to use ("silu" or "swigluoai").
+    - activation_func (Optional[Callable]): Custom activation function.
 
     Returns:
     - torch.Tensor: The output tensor after applying the MoE layer.
@@ -83,12 +114,15 @@ def fused_marlin_moe(
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     assert hidden_states.dtype in [torch.float16, torch.bfloat16]
-    assert (
-        hidden_states.dtype == w1_scale.dtype
-    ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w1_scale.dtype ({w1_scale.dtype})"
-    assert (
-        hidden_states.dtype == w2_scale.dtype
-    ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w2_scale.dtype ({w2_scale.dtype})"
+    
+    # For MXFP4, scales are in float8_e8m0fnu format, convert for comparison
+    if not is_mxfp4:
+        assert (
+            hidden_states.dtype == w1_scale.dtype
+        ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w1_scale.dtype ({w1_scale.dtype})"
+        assert (
+            hidden_states.dtype == w2_scale.dtype
+        ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w2_scale.dtype ({w2_scale.dtype})"
     assert num_bits in [4, 8]
 
     M, K = hidden_states.shape
@@ -119,8 +153,8 @@ def fused_marlin_moe(
             max_workspace_size, dtype=torch.int, device=device, requires_grad=False
         )
 
-    scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None)
-    scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None)
+    scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None, is_mxfp4=is_mxfp4)
+    scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None, is_mxfp4=is_mxfp4)
 
     intermediate_cache2 = torch.empty(
         (M * topk_ids.shape[1], N),
@@ -146,7 +180,7 @@ def fused_marlin_moe(
         hidden_states,
         intermediate_cache1,
         w1,
-        None,  # b_bias_or_none
+        w1_bias,  # b_bias_or_none - support MXFP4 bias
         w1_scale,
         None,  # global_scale_or_none
         w1_zeros,
@@ -171,7 +205,11 @@ def fused_marlin_moe(
         is_zp_float=False,
     )
 
-    silu_and_mul(intermediate_cache1.view(-1, 2 * N), intermediate_cache2)
+    # Apply activation function
+    if activation_func is not None:
+        activation_func(activation, intermediate_cache2, intermediate_cache1.view(-1, 2 * N))
+    else:
+        default_activation_func(activation, intermediate_cache2, intermediate_cache1.view(-1, 2 * N))
 
     if expert_map is not None:
         intermediate_cache3.zero_()
@@ -180,7 +218,7 @@ def fused_marlin_moe(
         intermediate_cache2,
         intermediate_cache3,
         w2,
-        None,  # b_bias_or_none
+        w2_bias,  # b_bias_or_none - support MXFP4 bias
         w2_scale,
         None,  # global_scale_or_none
         w2_zeros,

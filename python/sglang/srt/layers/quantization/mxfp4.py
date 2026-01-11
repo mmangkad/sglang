@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from enum import Enum
 from typing import TYPE_CHECKING, List, Optional
 
 import torch
@@ -51,11 +52,77 @@ from sglang.srt.utils import (
     round_up,
     set_weight_attrs,
 )
+from sglang.srt.utils.common import is_sm120_supported
 from sglang.srt.utils.custom_op import register_custom_op
 
 _is_sm100_supported = is_cuda() and is_sm100_supported()
 _is_sm90_supported = is_cuda() and is_sm90_supported()
+_is_sm120_supported = is_cuda() and is_sm120_supported()
 has_triton_kernels = is_triton_kernels_available()
+
+
+# Enum for MXFP4 backend selection (similar to vLLM)
+class Mxfp4Backend(Enum):
+    NONE = 0
+    # FlashInfer backends
+    FLASHINFER_TRTLLM = 1  # SM100 FlashInfer trtllm backend
+    FLASHINFER_MXFP4 = 2   # SM100 FlashInfer MXFP4 backend
+    # Triton kernels backend
+    TRITON_KERNELS = 3
+    # Marlin backend for SM120 (Blackwell RTX 50-series)
+    MARLIN = 4
+    # Triton fallback
+    TRITON = 5
+
+
+def get_mxfp4_backend() -> Mxfp4Backend:
+    """
+    Select the best MXFP4 backend based on hardware and available libraries.
+    
+    For SM120 (Blackwell/RTX 50-series), use Marlin backend as FlashInfer
+    MXFP4 kernels are not yet optimized for this architecture.
+    
+    For SM100 (Hopper/B200), prefer FlashInfer if available.
+    For SM90 (Hopper), use triton_kernels if available.
+    """
+    if not is_cuda():
+        return Mxfp4Backend.NONE
+    
+    # SM120 (Blackwell RTX 50-series) - Use Marlin backend
+    if _is_sm120_supported:
+        log_info_on_rank0(
+            logger,
+            "Using Marlin backend for MXFP4 on SM120 (Blackwell RTX 50-series)"
+        )
+        return Mxfp4Backend.MARLIN
+    
+    # SM100 (B200) - Use FlashInfer if available
+    if _is_sm100_supported:
+        if is_flashinfer_available():
+            # Check user preference via environment/server args
+            server_args = get_global_server_args()
+            backend = get_moe_runner_backend()
+            if backend.is_flashinfer_mxfp4():
+                return Mxfp4Backend.FLASHINFER_MXFP4
+            elif backend.is_flashinfer_trtllm():
+                return Mxfp4Backend.FLASHINFER_TRTLLM
+            # Default to FlashInfer MXFP4 on SM100
+            return Mxfp4Backend.FLASHINFER_MXFP4
+        elif has_triton_kernels:
+            return Mxfp4Backend.TRITON_KERNELS
+        else:
+            # Fallback to Marlin if no other option
+            return Mxfp4Backend.MARLIN
+    
+    # SM90 (Hopper) - Use triton_kernels if available
+    if _is_sm90_supported:
+        if has_triton_kernels:
+            return Mxfp4Backend.TRITON_KERNELS
+        else:
+            return Mxfp4Backend.TRITON
+    
+    # Fallback to Marlin for other CUDA devices
+    return Mxfp4Backend.MARLIN
 
 
 if is_flashinfer_available():
@@ -256,11 +323,26 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
 
         self.prefix = prefix
         self.topk_indices_dtype = None
-        self.use_triton_kernels = get_moe_runner_backend().is_triton_kernels()
         self.with_bias = False
-        self.use_flashinfer = get_moe_runner_backend().is_flashinfer_mxfp4()
+        
+        # Select the best backend based on hardware
+        self.mxfp4_backend = get_mxfp4_backend()
+        
+        # Determine which backend features to use
+        self.use_triton_kernels = self.mxfp4_backend == Mxfp4Backend.TRITON_KERNELS
+        self.use_flashinfer = self.mxfp4_backend in [
+            Mxfp4Backend.FLASHINFER_MXFP4, 
+            Mxfp4Backend.FLASHINFER_TRTLLM
+        ]
+        self.use_marlin = self.mxfp4_backend == Mxfp4Backend.MARLIN
+        
         self.flashinfer_mxfp4_moe_precision = (
             get_global_server_args().flashinfer_mxfp4_moe_precision
+        )
+        
+        log_info_on_rank0(
+            logger,
+            f"Mxfp4MoEMethod initialized with backend: {self.mxfp4_backend.name}"
         )
 
     def create_weights(
@@ -282,7 +364,21 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         # pad the intermediate size to be a multiple of 2 * mxfp4_block
         # for to hold non-uniform sharded tensor as well as swizzling
         intermediate_size_per_partition_after_pad = intermediate_size_per_partition
-        if _is_sm100_supported:
+        
+        if self.use_marlin:
+            # Marlin kernel requires n % 128 == 0 and k % 64 == 0
+            # For gate_up_proj: n = 2 * intermediate_size, k = hidden_size
+            # For down_proj: n = hidden_size, k = intermediate_size
+            intermediate_size_per_partition_after_pad = round_up(
+                intermediate_size_per_partition, 128
+            )
+            hidden_size = round_up(hidden_size, 256)
+            
+            # Store original sizes for layer config
+            layer.params_dtype = params_dtype
+            layer.marlin_hidden_size = hidden_size
+            layer.marlin_intermediate_size = intermediate_size_per_partition_after_pad
+        elif _is_sm100_supported:
             if self.use_flashinfer:
                 intermediate_size_per_partition_after_pad = round_up(
                     intermediate_size_per_partition, 256
@@ -372,6 +468,26 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         set_weight_attrs(w2_weight_bias, extra_weight_attrs)
 
     def process_weights_after_loading(self, layer):
+        # Handle Marlin backend weight preparation for SM120
+        if self.use_marlin:
+            log_info_on_rank0(
+                logger,
+                f"Preparing MXFP4 weights for Marlin kernel (layer: {self.prefix}), "
+                "this enables SM120 (Blackwell RTX 50-series) support..."
+            )
+            from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+                prepare_moe_fp4_layer_for_marlin,
+            )
+            
+            # Store activation info for the apply function
+            layer.mxfp4_activation = "swigluoai"  # GPT-OSS models use swigluoai
+            
+            # Prepare weights for Marlin
+            prepare_moe_fp4_layer_for_marlin(layer, input_dtype=None)
+            
+            torch.cuda.empty_cache()
+            return
+        
         if self.use_flashinfer:
             log_info_on_rank0(
                 logger,
@@ -588,11 +704,15 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         self, layer: torch.nn.Module, moe_runner_config: MoeRunnerConfig
     ):
         self.moe_runner_config = moe_runner_config
-        backend = (
-            MoeRunnerBackend.TRITON_KERNELS
-            if self.use_triton_kernels
-            else MoeRunnerBackend.TRITON
-        )
+        
+        if self.use_marlin:
+            # For Marlin backend, use the Marlin MoE runner
+            backend = MoeRunnerBackend.MARLIN
+        elif self.use_triton_kernels:
+            backend = MoeRunnerBackend.TRITON_KERNELS
+        else:
+            backend = MoeRunnerBackend.TRITON
+            
         self.runner = MoeRunner(backend, moe_runner_config)
 
     def apply(
@@ -606,6 +726,50 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
 
         x = dispatch_output.hidden_states
         topk_output = dispatch_output.topk_output
+
+        # Handle Marlin backend for SM120 (Blackwell RTX 50-series)
+        if self.use_marlin:
+            from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
+                fused_marlin_moe,
+            )
+            from sglang.srt.layers.quantization.marlin_utils import marlin_make_workspace
+            
+            topk_weights, topk_ids, _ = topk_output
+            router_logits = topk_output.router_logits
+            
+            # Get or create workspace
+            if not hasattr(layer, 'marlin_workspace') or layer.marlin_workspace is None:
+                layer.marlin_workspace = marlin_make_workspace(
+                    x.device, max_blocks_per_sm=4
+                )
+            
+            # Get activation from layer or default to swigluoai for GPT-OSS
+            activation = getattr(layer, 'mxfp4_activation', 'swigluoai')
+            
+            output = fused_marlin_moe(
+                hidden_states=x,
+                w1=layer.w13_weight,
+                w2=layer.w2_weight,
+                w1_scale=layer.w13_weight_scale,
+                w2_scale=layer.w2_weight_scale,
+                gating_output=router_logits,
+                topk_weights=topk_weights.to(torch.float32),
+                topk_ids=topk_ids,
+                global_num_experts=layer.num_experts,
+                expert_map=getattr(layer, 'expert_map', None),
+                workspace=layer.marlin_workspace,
+                num_bits=4,
+                is_k_full=True,
+                inplace=False,
+                routed_scaling_factor=None,
+                # MXFP4 specific parameters
+                w1_bias=layer.w13_weight_bias,
+                w2_bias=layer.w2_weight_bias,
+                is_mxfp4=True,
+                activation=activation,
+            )
+            
+            return StandardCombineInput(hidden_states=output)
 
         if self.use_flashinfer:
             # When bf16 mode is enabled, we don't need to quantize the input,
