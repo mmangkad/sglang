@@ -284,6 +284,7 @@ def fused_marlin_moe_mxfp4(
     input_dtype: Optional[torch.dtype] = None,
     is_k_full: bool = True,
     inplace: bool = False,
+    original_hidden_size: Optional[int] = None,
 ) -> torch.Tensor:
     """
     Fused MoE kernel for MXFP4 quantized weights using the Marlin kernel.
@@ -319,6 +320,8 @@ def fused_marlin_moe_mxfp4(
     - input_dtype (Optional[torch.dtype]): Input dtype for activation quantization.
     - is_k_full (bool): Whether K dimension is full (no act_order).
     - inplace (bool): Whether to write output in-place to hidden_states.
+    - original_hidden_size (Optional[int]): Original hidden size before padding. If provided,
+      the output will be sliced to this size. This is important for CUDA graphs.
 
     Returns:
     - torch.Tensor: The output tensor after applying the MoE layer.
@@ -492,17 +495,31 @@ def fused_marlin_moe_mxfp4(
     # Reduce across top-k experts
     output = output.view(-1, topk, K)
 
-    if inplace:
-        # Note: when we pad the input, inplace mode creates a new tensor
-        # so this is not a true inplace operation
+    # Determine the output hidden size
+    # If original_hidden_size is provided and smaller than K, we need to unpad the output
+    output_K = original_hidden_size if original_hidden_size is not None else K
+    needs_unpad = output_K < K
+    
+    # When we padded the input, hidden_states now has shape [M, K] (padded)
+    # So inplace mode only works when:
+    # 1. We need to unpad AND the original hidden_states shape matches output_K, OR
+    # 2. We don't need to unpad AND hidden_states shape matches K
+    # For simplicity, only use inplace when no unpadding is needed
+    if inplace and not needs_unpad:
+        # True inplace - hidden_states has shape [M, K] = [M, output_K]
         final_output = hidden_states
     else:
-        final_output = torch.empty((M, K), dtype=hidden_states.dtype, device=hidden_states.device)
+        final_output = torch.empty((M, output_K), dtype=hidden_states.dtype, device=hidden_states.device)
 
-    moe_sum_reduce(output, final_output, 1.0)
-    
-    # NOTE: We do NOT unpad the output here. The FusedMoE layer handles
-    # unpadding in forward_impl() with: final_hidden_states[..., :origin_hidden_states_dim]
-    # This keeps the output consistent with CUDA graphs which were captured with padded dimensions.
+    # moe_sum_reduce expects output shape [M, topk, K] 
+    # Need to reduce and potentially slice
+    if not needs_unpad:
+        # No unpadding needed - direct reduce
+        moe_sum_reduce(output, final_output, 1.0)
+    else:
+        # Need to unpad: first reduce to [M, K], then slice to [M, output_K]
+        temp_output = torch.empty((M, K), dtype=hidden_states.dtype, device=hidden_states.device)
+        moe_sum_reduce(output, temp_output, 1.0)
+        final_output.copy_(temp_output[:, :output_K])
     
     return final_output

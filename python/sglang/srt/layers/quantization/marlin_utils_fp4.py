@@ -113,21 +113,12 @@ def prepare_moe_fp4_layer_for_marlin(
 
     e = layer.num_experts
     
-    # Derive dimensions from actual weight shapes rather than layer config
-    # This handles cases where checkpoint weights may have padding
-    # w13_weight shape: [E, 2*N, K//2] (FP4 packed, 2 values per byte)
-    # w2_weight shape: [E, K, N//2]
-    w13_shape = layer.w13_weight.shape
-    w2_shape = layer.w2_weight.shape
-    
-    # Derive k and n from weight shapes
-    # For w13: shape is [E, 2*N, K//2]
-    k = w13_shape[2] * 2  # K = last_dim * 2 (FP4 unpacked)
-    n = w13_shape[1] // 2  # N = middle_dim / 2 (gate_up combined)
-    
-    # Store original config dimensions for potential input padding later
-    layer.marlin_hidden_size = k
-    layer.marlin_intermediate_size = n
+    # Use the padded dimensions that were set during create_weights
+    # These should have been padded to meet Marlin kernel requirements:
+    # - hidden_size: multiple of 256
+    # - intermediate_size: multiple of 128
+    k = layer.hidden_size
+    n = layer.intermediate_size_per_partition
 
     # WORKSPACE
     device = layer.w13_weight.device
@@ -135,24 +126,63 @@ def prepare_moe_fp4_layer_for_marlin(
     layer.workspace = marlin_make_workspace_new(device, 4)
     perm = torch.empty(0, dtype=torch.int, device=device)
 
+    # Get actual weight shapes from checkpoint
+    # w13_weight: [E, 2*N_orig, K_orig//2]
+    # w2_weight: [E, K_orig, N_orig//2]
+    w13_shape = layer.w13_weight.shape
+    k_orig = w13_shape[2] * 2  # Original hidden_size from checkpoint
+    n_orig = w13_shape[1] // 2  # Original intermediate_size from checkpoint
+    
+    # Store original dimensions if not already set (for output unpadding)
+    if not hasattr(layer, 'original_hidden_size') or layer.original_hidden_size is None:
+        layer.original_hidden_size = k_orig
+    if not hasattr(layer, 'original_intermediate_size_per_partition') or layer.original_intermediate_size_per_partition is None:
+        layer.original_intermediate_size_per_partition = n_orig
+    
+    # Check if we need to pad weights to meet Marlin requirements
+    need_k_pad = k > k_orig
+    need_n_pad = n > n_orig
+    
+    if need_k_pad or need_n_pad:
+        logger.info(
+            f"Padding MoE weights for Marlin alignment: "
+            f"hidden_size {k_orig} -> {k}, intermediate_size {n_orig} -> {n}"
+        )
+
     # WEIGHT
     # Repack weights to marlin format
     for name in ["w13_weight", "w2_weight"]:
         weight = getattr(layer, name)
         tensor_list = []
+        
         if "w13" in name:
+            # w13: [E, 2*N, K//2] -> repack with size_n=2*N, size_k=K
             size_n, size_k = n * 2, k
-            expected_shape = (e, size_n, size_k // 2)
+            orig_n, orig_k = n_orig * 2, k_orig
+            
+            # Pad weight if needed: [E, 2*N_orig, K_orig//2] -> [E, 2*N, K//2]
+            if need_k_pad or need_n_pad:
+                # Pad K dimension (last dim, packed so pad by half)
+                k_pad = (k - k_orig) // 2
+                # Pad N dimension (middle dim, already *2)
+                n_pad = (n - n_orig) * 2
+                weight = torch.nn.functional.pad(
+                    weight, (0, k_pad, 0, n_pad), mode="constant", value=0
+                )
         else:
+            # w2: [E, K, N//2] -> repack with size_n=K, size_k=N
             size_n, size_k = k, n
-            expected_shape = (e, size_n, size_k // 2)
-
-        # Verify weight shape matches derived dimensions
-        if weight.shape != expected_shape:
-            logger.warning(
-                f"Weight shape mismatch for {name}: expected {expected_shape}, "
-                f"got {weight.shape}. Weights may have been created with different padding."
-            )
+            orig_n, orig_k = k_orig, n_orig
+            
+            # Pad weight if needed: [E, K_orig, N_orig//2] -> [E, K, N//2]
+            if need_k_pad or need_n_pad:
+                # Pad K dimension (middle dim)
+                k_pad = k - k_orig
+                # Pad N dimension (last dim, packed so pad by half)
+                n_pad = (n - n_orig) // 2
+                weight = torch.nn.functional.pad(
+                    weight, (0, n_pad, 0, k_pad), mode="constant", value=0
+                )
 
         for i in range(e):
             qweight = weight[i].view(torch.int32).T.contiguous()
@@ -172,7 +202,8 @@ def prepare_moe_fp4_layer_for_marlin(
         setattr(layer, name, weight)
 
     # WEIGHT SCALES
-    # Permute scales
+    # Permute scales - need to pad scales to match padded weight dimensions
+    # Scale shape: [E, (size_n), (size_k // group_size)]
     for name in ["w13", "w2"]:
         scales = getattr(layer, name + "_weight_scale")
         if not is_nvfp4:
@@ -182,8 +213,21 @@ def prepare_moe_fp4_layer_for_marlin(
         tensor_list = []
         if "w13" in name:
             size_n, size_k = n * 2, k
+            orig_n, orig_k = n_orig * 2, k_orig
         else:
             size_n, size_k = k, n
+            orig_n, orig_k = k_orig, n_orig
+
+        # Pad scales if needed
+        # Scale shape is typically [E, size_n, size_k // group_size]
+        if need_k_pad or need_n_pad:
+            # Calculate padding for scales
+            k_scale_pad = (size_k - orig_k) // group_size
+            n_scale_pad = size_n - orig_n
+            if k_scale_pad > 0 or n_scale_pad > 0:
+                scales = torch.nn.functional.pad(
+                    scales, (0, k_scale_pad, 0, n_scale_pad), mode="constant", value=0
+                )
 
         for i in range(e):
             scale = scales[i].T
@@ -204,7 +248,7 @@ def prepare_moe_fp4_layer_for_marlin(
         setattr(layer, name + "_weight_scale", scales)
 
     # BIAS
-    # Permute bias
+    # Permute bias - pad if needed
     for name in ["w13_bias", "w2_bias"]:
         if not hasattr(layer, name):
             continue
@@ -212,6 +256,19 @@ def prepare_moe_fp4_layer_for_marlin(
         if bias is None:
             continue
         bias = bias.to(param_dtype)
+
+        # Pad bias if needed
+        if "w13" in name:
+            bias_size = n * 2
+            orig_bias_size = n_orig * 2
+        else:
+            bias_size = k
+            orig_bias_size = k_orig
+        
+        if bias.shape[-1] < bias_size:
+            bias = torch.nn.functional.pad(
+                bias, (0, bias_size - orig_bias_size), mode="constant", value=0
+            )
 
         tensor_list = []
         for i in range(e):

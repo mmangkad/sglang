@@ -380,6 +380,10 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         # for to hold non-uniform sharded tensor as well as swizzling
         intermediate_size_per_partition_after_pad = intermediate_size_per_partition
         
+        # Store original dimensions before any padding
+        original_hidden_size = hidden_size
+        original_intermediate_size_per_partition = intermediate_size_per_partition
+        
         if self.mxfp4_backend == Mxfp4Backend.MARLIN:
             # The moe marlin kernel requires that for each linear
             # n % 256 == 0 and k % 128 == 0.
@@ -400,6 +404,11 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
             layer.hidden_size = hidden_size
             layer.intermediate_size_per_partition = (
                 intermediate_size_per_partition_after_pad
+            )
+            # Store original dimensions for output unpadding
+            layer.original_hidden_size = original_hidden_size
+            layer.original_intermediate_size_per_partition = (
+                original_intermediate_size_per_partition
             )
         elif _is_sm100_supported:
             if self.use_flashinfer:
@@ -747,6 +756,9 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         if self.mxfp4_backend == Mxfp4Backend.MARLIN:
             from sglang.srt.layers.moe.moe_runner.marlin import MarlinMxfp4MoeQuantInfo
             
+            # Get original hidden size for output unpadding
+            original_hidden_size = getattr(layer, 'original_hidden_size', None)
+            
             quant_info = MarlinMxfp4MoeQuantInfo(
                 w13_qweight=layer.w13_weight,
                 w2_qweight=layer.w2_weight,
@@ -757,6 +769,7 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 expert_map=getattr(layer, 'expert_map', None),
                 global_num_experts=layer.num_experts if hasattr(layer, 'num_experts') else -1,
                 activation=self.moe_runner_config.activation if hasattr(self, 'moe_runner_config') else "silu",
+                original_hidden_size=original_hidden_size,
             )
             return self.runner.run(dispatch_output, quant_info)
 
