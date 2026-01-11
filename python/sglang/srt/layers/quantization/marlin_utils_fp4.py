@@ -141,7 +141,6 @@ def prepare_moe_fp4_layer_for_marlin(
     param_dtype = getattr(layer, "params_dtype", torch.bfloat16)
     layer.marlin_workspace = marlin_make_workspace(device, max_blocks_per_sm=4)
     perm = torch.empty(0, dtype=torch.int, device=device)
-    is_a_8bit = input_dtype is not None and input_dtype.itemsize == 1
 
     # WEIGHT
     # Repack weights to marlin format
@@ -172,7 +171,6 @@ def prepare_moe_fp4_layer_for_marlin(
                 size_k=size_k,
                 size_n=size_n,
                 num_bits=4,
-                is_a_8bit=is_a_8bit,
             )
             tensor_list.append(marlin_qweight)
 
