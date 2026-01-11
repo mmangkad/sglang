@@ -738,30 +738,20 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
 
         # Handle Marlin backend
         if self.mxfp4_backend == Mxfp4Backend.MARLIN:
-            from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import (
-                fused_marlin_moe_mxfp4,
-            )
+            from sglang.srt.layers.moe.moe_runner.marlin import MarlinMxfp4MoeQuantInfo
             
-            topk_weights, topk_ids, _ = topk_output
-            
-            output = fused_marlin_moe_mxfp4(
-                hidden_states=x,
-                w1=layer.w13_weight,
-                w2=layer.w2_weight,
-                w1_bias=getattr(layer, "w13_bias", getattr(layer, "w13_weight_bias", None)),
+            quant_info = MarlinMxfp4MoeQuantInfo(
+                w13_qweight=layer.w13_weight,
+                w2_qweight=layer.w2_weight,
+                w13_scales=layer.w13_weight_scale,
+                w2_scales=layer.w2_weight_scale,
+                w13_bias=getattr(layer, "w13_bias", getattr(layer, "w13_weight_bias", None)),
                 w2_bias=getattr(layer, "w2_bias", getattr(layer, "w2_weight_bias", None)),
-                w1_scale=layer.w13_weight_scale,
-                w2_scale=layer.w2_weight_scale,
-                router_logits=topk_output.router_logits if hasattr(topk_output, 'router_logits') else None,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
+                expert_map=getattr(layer, 'expert_map', None),
                 global_num_experts=layer.num_experts if hasattr(layer, 'num_experts') else -1,
                 activation=self.moe_runner_config.activation if hasattr(self, 'moe_runner_config') else "silu",
-                apply_router_weight_on_input=False,
-                expert_map=getattr(layer, 'expert_map', None),
-                input_dtype=None,
             )
-            return StandardCombineInput(hidden_states=output)
+            return self.runner.run(dispatch_output, quant_info)
 
         if self.use_flashinfer:
             # When bf16 mode is enabled, we don't need to quantize the input,
