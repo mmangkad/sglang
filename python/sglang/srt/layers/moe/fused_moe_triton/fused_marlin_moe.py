@@ -344,14 +344,11 @@ def fused_marlin_moe_mxfp4(
     topk = topk_ids.size(1)
 
     # Handle input padding if weights were padded for alignment
-    needs_unpad = False
-    original_K = input_K
     if input_K < K:
         # Pad hidden_states to match weight dimensions
         hidden_states = torch.nn.functional.pad(
             hidden_states, (0, K - input_K), mode="constant", value=0.0
         )
-        needs_unpad = True
     elif input_K > K:
         raise ValueError(
             f"Input hidden size {input_K} > weight hidden size {K}. "
@@ -496,14 +493,16 @@ def fused_marlin_moe_mxfp4(
     output = output.view(-1, topk, K)
 
     if inplace:
+        # Note: when we pad the input, inplace mode creates a new tensor
+        # so this is not a true inplace operation
         final_output = hidden_states
     else:
         final_output = torch.empty((M, K), dtype=hidden_states.dtype, device=hidden_states.device)
 
     moe_sum_reduce(output, final_output, 1.0)
     
-    # Unpad output if input was padded
-    if needs_unpad:
-        final_output = final_output[:, :original_K].contiguous()
+    # NOTE: We do NOT unpad the output here. The FusedMoE layer handles
+    # unpadding in forward_impl() with: final_hidden_states[..., :origin_hidden_states_dim]
+    # This keeps the output consistent with CUDA graphs which were captured with padded dimensions.
     
     return final_output
