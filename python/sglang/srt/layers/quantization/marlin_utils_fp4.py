@@ -120,7 +120,6 @@ def prepare_moe_fp4_layer_for_marlin(
     param_dtype = layer.params_dtype
     layer.workspace = marlin_make_workspace_new(device, 4)
     perm = torch.empty(0, dtype=torch.int, device=device)
-    is_a_8bit = input_dtype is not None and input_dtype.itemsize == 1
 
     # WEIGHT
     # Repack weights to marlin format
@@ -146,7 +145,6 @@ def prepare_moe_fp4_layer_for_marlin(
                 size_k=size_k,
                 size_n=size_n,
                 num_bits=4,
-                is_a_8bit=is_a_8bit,
             )
             tensor_list.append(marlin_qweight)
 
@@ -222,12 +220,6 @@ def rand_marlin_weight_mxfp4_like(
     Returns:
         Tuple of (reference_weight, marlin_qweight, marlin_scales)
     """
-    is_a_8bit = input_dtype is not None and input_dtype.itemsize == 1
-    if is_a_8bit:
-        assert input_dtype == torch.float8_e4m3fn, (
-            "MXFP4 weight + INT8 activation is not supported."
-        )
-
     assert group_size > 0
     size_n, size_k = weight.shape
     device = weight.device
@@ -266,7 +258,6 @@ def rand_marlin_weight_mxfp4_like(
         size_k=size_k,
         size_n=size_n,
         num_bits=4,
-        is_a_8bit=is_a_8bit,
     )
 
     marlin_scales = marlin_permute_scales(
