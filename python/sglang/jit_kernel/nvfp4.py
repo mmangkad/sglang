@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import pathlib
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Optional, Tuple
 
 import torch
@@ -66,6 +67,33 @@ def _nvfp4_cuda_flags() -> list[str]:
     ]
 
 
+def _get_nvfp4_cuda_arch() -> str:
+    if not torch.cuda.is_available():
+        raise RuntimeError("NVFP4 JIT kernels require CUDA.")
+    major, minor = torch.cuda.get_device_capability()
+    if major < 10:
+        raise RuntimeError(
+            f"NVFP4 JIT kernels require compute capability >= 10.0, got {major}.{minor}."
+        )
+    # NVFP4 kernels use architecture-family-specific instructions and must be
+    # compiled for `sm_*a` targets (e.g. sm_100a), not plain sm_100.
+    return f"{major}.{minor}a"
+
+
+@contextmanager
+def _nvfp4_arch_env():
+    key = "TVM_FFI_CUDA_ARCH_LIST"
+    old_val = os.environ.get(key)
+    os.environ[key] = _get_nvfp4_cuda_arch()
+    try:
+        yield
+    finally:
+        if old_val is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = old_val
+
+
 @cache_once
 def _jit_nvfp4_quant_module() -> Module:
     extra_include_paths = _resolve_cutlass_include_paths()
@@ -75,17 +103,18 @@ def _jit_nvfp4_quant_module() -> Module:
             "Please install flashinfer or deep_gemm with CUTLASS headers."
         )
 
-    return load_jit(
-        "nvfp4_quant",
-        cuda_files=[
-            "gemm/nvfp4/nvfp4_quant_kernels.cuh",
-        ],
-        cuda_wrappers=[
-            ("scaled_fp4_quant", "scaled_fp4_quant_sm100a_sm120a"),
-        ],
-        extra_include_paths=extra_include_paths,
-        extra_cuda_cflags=_nvfp4_cuda_flags(),
-    )
+    with _nvfp4_arch_env():
+        return load_jit(
+            "nvfp4_quant",
+            cuda_files=[
+                "gemm/nvfp4/nvfp4_quant_kernels.cuh",
+            ],
+            cuda_wrappers=[
+                ("scaled_fp4_quant", "scaled_fp4_quant_sm100a_sm120a"),
+            ],
+            extra_include_paths=extra_include_paths,
+            extra_cuda_cflags=_nvfp4_cuda_flags(),
+        )
 
 
 @cache_once
@@ -97,21 +126,22 @@ def _jit_nvfp4_expert_quant_module() -> Module:
             "Please install flashinfer or deep_gemm with CUTLASS headers."
         )
 
-    return load_jit(
-        "nvfp4_expert_quant",
-        cuda_files=[
-            "gemm/nvfp4/nvfp4_expert_quant.cuh",
-        ],
-        cuda_wrappers=[
-            ("scaled_fp4_experts_quant", "scaled_fp4_experts_quant_sm100a"),
-            (
-                "silu_and_mul_scaled_fp4_experts_quant",
-                "silu_and_mul_scaled_fp4_experts_quant_sm100a",
-            ),
-        ],
-        extra_include_paths=extra_include_paths,
-        extra_cuda_cflags=_nvfp4_cuda_flags(),
-    )
+    with _nvfp4_arch_env():
+        return load_jit(
+            "nvfp4_expert_quant",
+            cuda_files=[
+                "gemm/nvfp4/nvfp4_expert_quant.cuh",
+            ],
+            cuda_wrappers=[
+                ("scaled_fp4_experts_quant", "scaled_fp4_experts_quant_sm100a"),
+                (
+                    "silu_and_mul_scaled_fp4_experts_quant",
+                    "silu_and_mul_scaled_fp4_experts_quant_sm100a",
+                ),
+            ],
+            extra_include_paths=extra_include_paths,
+            extra_cuda_cflags=_nvfp4_cuda_flags(),
+        )
 
 
 @cache_once
@@ -123,16 +153,17 @@ def _jit_nvfp4_scaled_mm_module() -> Module:
             "Please install flashinfer or deep_gemm with CUTLASS headers."
         )
 
-    return load_jit(
-        "nvfp4_scaled_mm",
-        cuda_files=[
-            "gemm/nvfp4/nvfp4_scaled_mm_kernels.cuh",
-            "gemm/nvfp4/nvfp4_scaled_mm_entry.cuh",
-        ],
-        cuda_wrappers=[("cutlass_scaled_fp4_mm", "cutlass_scaled_fp4_mm")],
-        extra_include_paths=extra_include_paths,
-        extra_cuda_cflags=_nvfp4_cuda_flags(),
-    )
+    with _nvfp4_arch_env():
+        return load_jit(
+            "nvfp4_scaled_mm",
+            cuda_files=[
+                "gemm/nvfp4/nvfp4_scaled_mm_kernels.cuh",
+                "gemm/nvfp4/nvfp4_scaled_mm_entry.cuh",
+            ],
+            cuda_wrappers=[("cutlass_scaled_fp4_mm", "cutlass_scaled_fp4_mm")],
+            extra_include_paths=extra_include_paths,
+            extra_cuda_cflags=_nvfp4_cuda_flags(),
+        )
 
 
 def cutlass_scaled_fp4_mm(
