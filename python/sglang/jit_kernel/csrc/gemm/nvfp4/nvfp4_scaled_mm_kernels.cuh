@@ -19,7 +19,10 @@ limitations under the License.
 #include <sgl_kernel/runtime.cuh>
 #include <sgl_kernel/utils.cuh>
 
+#include <cstddef>
+#include <cstdint>
 #include <cuda_runtime.h>
+#include <unordered_map>
 
 using namespace host;
 
@@ -53,6 +56,49 @@ inline uint32_t next_pow_2(uint32_t x) {
   x |= x >> 8;
   x |= x >> 16;
   return x + 1;
+}
+
+struct WorkspaceKey {
+  int device_id;
+  uintptr_t stream;
+  auto operator==(const WorkspaceKey&) const -> bool = default;
+};
+
+struct WorkspaceKeyHash {
+  auto operator()(const WorkspaceKey& key) const -> size_t {
+    size_t h1 = std::hash<int>{}(key.device_id);
+    size_t h2 = std::hash<uintptr_t>{}(key.stream);
+    return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+  }
+};
+
+struct WorkspaceState {
+  void* ptr = nullptr;
+  size_t bytes = 0;
+};
+
+inline auto get_cached_workspace(size_t required_bytes, int device_id, cudaStream_t stream) -> void* {
+  if (required_bytes == 0) {
+    return nullptr;
+  }
+
+  thread_local std::unordered_map<WorkspaceKey, WorkspaceState, WorkspaceKeyHash> cache;
+  WorkspaceKey key{device_id, reinterpret_cast<uintptr_t>(stream)};
+  auto& ws = cache[key];
+
+  if (ws.ptr != nullptr && ws.bytes >= required_bytes) {
+    return ws.ptr;
+  }
+
+  RuntimeDeviceCheck(cudaSetDevice(device_id));
+  if (ws.ptr != nullptr) {
+    RuntimeDeviceCheck(cudaFreeAsync(ws.ptr, stream));
+    ws.ptr = nullptr;
+    ws.bytes = 0;
+  }
+  RuntimeDeviceCheck(cudaMallocAsync(&ws.ptr, required_bytes, stream));
+  ws.bytes = required_bytes;
+  return ws.ptr;
 }
 
 #if defined(CUTLASS_ARCH_MMA_SM100_SUPPORTED) || defined(CUTLASS_ARCH_MMA_SM120_SUPPORTED) || \
@@ -353,19 +399,14 @@ void runGemm(
   auto arguments = args_from_options<T>(D, A, B, A_sf, B_sf, alpha, m, n, k);
 
   size_t workspace_size = T::Gemm::get_workspace_size(arguments);
-  void* workspace = nullptr;
-  if (workspace_size > 0) {
-    RuntimeDeviceCheck(cudaMallocAsync(&workspace, workspace_size, stream));
-  }
+  int device_id = A.device().device_id;
+  void* workspace = get_cached_workspace(workspace_size, device_id, stream);
 
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace, stream));
 
   CUTLASS_CHECK(gemm.run(arguments, workspace, stream));
-  if (workspace_size > 0) {
-    RuntimeDeviceCheck(cudaFreeAsync(workspace, stream));
-  }
 }
 
 // SM120 specific args_from_options function
@@ -437,19 +478,14 @@ void runGemmSm120(
   auto arguments = args_from_options_sm120<Gemm>(D, A, B, A_sf, B_sf, alpha, M, N, K);
 
   size_t workspace_size = Gemm::get_workspace_size(arguments);
-  void* workspace = nullptr;
-  if (workspace_size > 0) {
-    RuntimeDeviceCheck(cudaMallocAsync(&workspace, workspace_size, stream));
-  }
+  int device_id = A.device().device_id;
+  void* workspace = get_cached_workspace(workspace_size, device_id, stream);
 
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
   CUTLASS_CHECK(gemm.initialize(arguments, workspace, stream));
 
   CUTLASS_CHECK(gemm.run(arguments, workspace, stream));
-  if (workspace_size > 0) {
-    RuntimeDeviceCheck(cudaFreeAsync(workspace, stream));
-  }
 }
 
 // Dispatch function to select appropriate config based on M
