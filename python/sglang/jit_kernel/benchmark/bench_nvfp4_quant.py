@@ -44,7 +44,7 @@ shape_range = get_benchmark_range(
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
-        x_names=["shape"],
+        x_names=["m", "n"],
         x_vals=shape_range,
         x_log=False,
         line_arg="provider",
@@ -56,8 +56,7 @@ shape_range = get_benchmark_range(
         args={},
     )
 )
-def benchmark(shape, provider):
-    m, n = shape
+def benchmark(m, n, provider):
     x = torch.randn((m, n), dtype=torch.bfloat16, device="cuda")
     tensor_amax = torch.abs(x).max().to(torch.float32)
     global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / tensor_amax

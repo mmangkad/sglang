@@ -62,7 +62,7 @@ shape_range = get_benchmark_range(
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
-        x_names=["shape"],
+        x_names=["m", "n", "k"],
         x_vals=shape_range,
         x_log=False,
         line_arg="provider",
@@ -74,8 +74,7 @@ shape_range = get_benchmark_range(
         args={},
     )
 )
-def benchmark(shape, provider):
-    m, n, k = shape
+def benchmark(m, n, k, provider):
     a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
     b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
 
