@@ -17,10 +17,10 @@ if _is_cuda:
         es_sm100_mxfp8_blockscaled_grouped_quant,
         fp8_blockwise_scaled_grouped_mm,
         prepare_moe_input,
-        scaled_fp4_experts_quant,
         shuffle_rows,
         silu_and_mul,
     )
+    from sglang.jit_kernel.nvfp4 import scaled_fp4_experts_quant
 
 
 def cutlass_fused_experts_fp8(
