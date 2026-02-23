@@ -78,17 +78,35 @@ def _jit_nvfp4_quant_module() -> Module:
     return load_jit(
         "nvfp4_quant",
         cuda_files=[
-            "gemm/nvfp4/nvfp4_quant.cuh",
             "gemm/nvfp4/nvfp4_quant_kernels.cuh",
-            "gemm/nvfp4/nvfp4_expert_quant.cuh",
-            "gemm/nvfp4/nvfp4_quant_entry.cuh",
         ],
         cuda_wrappers=[
-            ("scaled_fp4_quant", "scaled_fp4_quant"),
-            ("scaled_fp4_experts_quant", "scaled_fp4_experts_quant"),
+            ("scaled_fp4_quant", "scaled_fp4_quant_sm100a_sm120a"),
+        ],
+        extra_include_paths=extra_include_paths,
+        extra_cuda_cflags=_nvfp4_cuda_flags(),
+    )
+
+
+@cache_once
+def _jit_nvfp4_expert_quant_module() -> Module:
+    extra_include_paths = _resolve_cutlass_include_paths()
+    if not extra_include_paths:
+        raise RuntimeError(
+            "Cannot find CUTLASS headers required for NVFP4 JIT expert quantization. "
+            "Please install flashinfer or deep_gemm with CUTLASS headers."
+        )
+
+    return load_jit(
+        "nvfp4_expert_quant",
+        cuda_files=[
+            "gemm/nvfp4/nvfp4_expert_quant.cuh",
+        ],
+        cuda_wrappers=[
+            ("scaled_fp4_experts_quant", "scaled_fp4_experts_quant_sm100a"),
             (
                 "silu_and_mul_scaled_fp4_experts_quant",
-                "silu_and_mul_scaled_fp4_experts_quant",
+                "silu_and_mul_scaled_fp4_experts_quant_sm100a",
             ),
         ],
         extra_include_paths=extra_include_paths,
@@ -227,7 +245,7 @@ def scaled_fp4_experts_quant(
             device=input_tensor.device,
         )
 
-    module = _jit_nvfp4_quant_module()
+    module = _jit_nvfp4_expert_quant_module()
     module.scaled_fp4_experts_quant(
         output,
         output_scales,
@@ -260,7 +278,7 @@ def scaled_fp4_grouped_quant(
         l, padded_m, padded_k_int32, device=device, dtype=torch.int32
     )
 
-    module = _jit_nvfp4_quant_module()
+    module = _jit_nvfp4_expert_quant_module()
     module.silu_and_mul_scaled_fp4_experts_quant(
         output.view(l * m, k // 2),
         output_scales.view(l * padded_m, padded_k_int32),
@@ -299,7 +317,7 @@ def silu_and_mul_scaled_fp4_grouped_quant(
         l, padded_m, padded_k_int32, device=device, dtype=torch.int32
     )
 
-    module = _jit_nvfp4_quant_module()
+    module = _jit_nvfp4_expert_quant_module()
     module.silu_and_mul_scaled_fp4_experts_quant(
         output.view(l * m, k // 2),
         output_scales.view(l * padded_m, padded_k_int32),
