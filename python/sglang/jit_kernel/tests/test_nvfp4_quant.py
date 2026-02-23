@@ -7,9 +7,21 @@ from sglang.jit_kernel.nvfp4 import (
     silu_and_mul_scaled_fp4_grouped_quant,
 )
 
+try:
+    from sgl_kernel import silu_and_mul as _sgl_silu_and_mul
+except Exception:
+    _sgl_silu_and_mul = None
+
 
 def _nvfp4_supported() -> bool:
     return torch.cuda.is_available() and torch.cuda.get_device_capability() >= (10, 0)
+
+
+def _silu_and_mul_reference(x: torch.Tensor) -> torch.Tensor:
+    if _sgl_silu_and_mul is not None:
+        return _sgl_silu_and_mul(x)
+    k = x.shape[-1] // 2
+    return torch.nn.functional.silu(x[:, :, :k]) * x[:, :, k:]
 
 
 DTYPES = [torch.float16, torch.bfloat16]
@@ -178,9 +190,7 @@ def test_silu_and_mul_quantize_to_fp4_grouped(shape: tuple[int, int, int]) -> No
     x = torch.randn((l, m, k * 2), dtype=torch.bfloat16, device="cuda")
     mask = torch.randint(1, max(2, m // 2), (l,), dtype=torch.int32, device="cuda")
 
-    x_gate = x[:, :, :k]
-    x_up = x[:, :, k:]
-    ref_y = torch.nn.functional.silu(x_gate) * x_up
+    ref_y = _silu_and_mul_reference(x)
 
     tensor_amax = ref_y.abs().amax(dim=(1, 2)).to(torch.float32)
     y_sf_global = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / tensor_amax
