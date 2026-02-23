@@ -46,11 +46,11 @@ E2M1_TO_FLOAT32 = [
 
 
 def cast_from_fp4(x: torch.Tensor, m: int, n: int) -> torch.Tensor:
-    v_2nd = x & 0xF
-    v_1st = (x >> 4) & 0xF
-    c = torch.stack((v_2nd, v_1st), dim=-1)
-    out = torch.tensor([E2M1_TO_FLOAT32[v] for v in c.flatten()])
-    return out.reshape(m, n).to(torch.float32)
+    v_2nd = (x & 0xF).to(torch.long)
+    v_1st = ((x >> 4) & 0xF).to(torch.long)
+    c = torch.stack((v_2nd, v_1st), dim=-1).flatten()
+    lut = torch.tensor(E2M1_TO_FLOAT32, device=x.device, dtype=torch.float32)
+    return lut[c].reshape(m, n)
 
 
 def cast_to_fp4(x: torch.Tensor) -> torch.Tensor:
