@@ -13,15 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-
-#include <sgl_kernel/runtime.cuh>
 #include <sgl_kernel/tensor.h>
-#include <sgl_kernel/utils.cuh>
 #include <sgl_kernel/utils.h>
 
+#include <sgl_kernel/runtime.cuh>
+#include <sgl_kernel/utils.cuh>
+
 #include "nvfp4_quant.cuh"
+#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 
 using namespace host;
 
@@ -210,8 +210,7 @@ void scaled_fp4_quant_sm100a_sm120a(
   RuntimeCheck(host::is_type<int32_t>(output_sf.dtype()), "output_sf must be int32");
   RuntimeCheck(host::is_type<float>(input_sf.dtype()), "input_sf must be float32");
   RuntimeCheck(
-      host::is_type<fp16_t>(input.dtype()) || host::is_type<bf16_t>(input.dtype()),
-      "input dtype must be fp16 or bf16");
+      host::is_type<fp16_t>(input.dtype()) || host::is_type<bf16_t>(input.dtype()), "input dtype must be fp16 or bf16");
 
   const int device_id = input.device().device_id;
   const auto sm_version = getSMVersion(device_id);

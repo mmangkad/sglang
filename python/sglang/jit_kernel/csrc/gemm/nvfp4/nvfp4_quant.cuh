@@ -13,9 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cutlass/arch/config.h>
+
 #include <cuda.h>
 #include <cuda_fp8.h>
-#include <cutlass/arch/config.h>
 
 // Get type2 from type or vice versa (applied to half and bfloat16)
 template <typename T>

@@ -145,9 +145,10 @@ def scaled_fp4_quant(
     device = input.device
 
     assert n % block_size == 0, f"last dim has to be multiple of 16, but got {n}."
-    assert input.dtype in (torch.float16, torch.bfloat16), (
-        f"input.dtype needs to be fp16 or bf16 but got {input.dtype}."
-    )
+    assert input.dtype in (
+        torch.float16,
+        torch.bfloat16,
+    ), f"input.dtype needs to be fp16 or bf16 but got {input.dtype}."
 
     output = torch.empty((m, n // 2), device=device, dtype=torch.uint8)
 
@@ -155,9 +156,13 @@ def scaled_fp4_quant(
     scale_n = n // block_size
     rounded_n = ((scale_n + 4 - 1) // 4) * 4
     if rounded_n > scale_n:
-        output_scale = torch.zeros((rounded_m, rounded_n // 4), device=device, dtype=torch.int32)
+        output_scale = torch.zeros(
+            (rounded_m, rounded_n // 4), device=device, dtype=torch.int32
+        )
     else:
-        output_scale = torch.empty((rounded_m, rounded_n // 4), device=device, dtype=torch.int32)
+        output_scale = torch.empty(
+            (rounded_m, rounded_n // 4), device=device, dtype=torch.int32
+        )
 
     module = _jit_nvfp4_quant_module()
     module.scaled_fp4_quant(output, input, output_scale, input_global_scale)
@@ -184,13 +189,15 @@ def scaled_fp4_experts_quant(
     expert_map: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize packed MoE activations to NVFP4."""
-    assert input_tensor.ndim == 2, (
-        f"input.ndim needs to be == 2, but got {input_tensor.ndim}."
-    )
+    assert (
+        input_tensor.ndim == 2
+    ), f"input.ndim needs to be == 2, but got {input_tensor.ndim}."
     if expert_map is not None:
         m, k = input_tensor.shape
         output_tensor_shape = (m * topk, k)
-        input_tensor = _shuffle_rows_torch(input_tensor, expert_map, output_tensor_shape)
+        input_tensor = _shuffle_rows_torch(
+            input_tensor, expert_map, output_tensor_shape
+        )
 
     m_numtopk, k = input_tensor.shape
     max_tokens_per_expert = int(os.environ.get("MODELOPT_MAX_TOKENS_PER_EXPERT", 65536))
@@ -202,7 +209,9 @@ def scaled_fp4_experts_quant(
     scales_k = k // 16
     padded_k = (scales_k + (4 - 1)) // 4
 
-    output = torch.empty(m_numtopk, k // 2, device=input_tensor.device, dtype=torch.uint8)
+    output = torch.empty(
+        m_numtopk, k // 2, device=input_tensor.device, dtype=torch.uint8
+    )
     if padded_k > scales_k:
         output_scales = torch.zeros(
             max_tokens_per_expert * topk,
@@ -247,7 +256,9 @@ def scaled_fp4_grouped_quant(
     padded_k_int32 = padded_k // 4
     padded_m = (m + (128 - 1)) // 128 * 128
     output = torch.empty(l, m, k // 2, device=device, dtype=torch.uint8)
-    output_scales = torch.empty(l, padded_m, padded_k_int32, device=device, dtype=torch.int32)
+    output_scales = torch.empty(
+        l, padded_m, padded_k_int32, device=device, dtype=torch.int32
+    )
 
     module = _jit_nvfp4_quant_module()
     module.silu_and_mul_scaled_fp4_experts_quant(
@@ -284,7 +295,9 @@ def silu_and_mul_scaled_fp4_grouped_quant(
     padded_k_int32 = padded_k // 4
     padded_m = (m + (128 - 1)) // 128 * 128
     output = torch.empty(l, m, k // 2, device=device, dtype=torch.uint8)
-    output_scales = torch.empty(l, padded_m, padded_k_int32, device=device, dtype=torch.int32)
+    output_scales = torch.empty(
+        l, padded_m, padded_k_int32, device=device, dtype=torch.int32
+    )
 
     module = _jit_nvfp4_quant_module()
     module.silu_and_mul_scaled_fp4_experts_quant(

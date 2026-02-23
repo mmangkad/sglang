@@ -1,12 +1,12 @@
-#include <cuda_runtime.h>
-#include <cuda_runtime_api.h>
-
-#include <sgl_kernel/runtime.cuh>
 #include <sgl_kernel/tensor.h>
-#include <sgl_kernel/utils.cuh>
 #include <sgl_kernel/utils.h>
 
+#include <sgl_kernel/runtime.cuh>
+#include <sgl_kernel/utils.cuh>
+
 #include "nvfp4_quant.cuh"
+#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 
 using namespace host;
 
@@ -563,7 +563,8 @@ void scaled_fp4_experts_quant_sm100a(
   RuntimeCheck(output.device() == input.device(), "output and input must be on same device");
   RuntimeCheck(output_scale.device() == input.device(), "output_scale and input must be on same device");
   RuntimeCheck(input_global_scale.device() == input.device(), "input_global_scale and input must be on same device");
-  RuntimeCheck(input_offset_by_experts.device() == input.device(), "input_offset_by_experts and input must be on same device");
+  RuntimeCheck(
+      input_offset_by_experts.device() == input.device(), "input_offset_by_experts and input must be on same device");
   RuntimeCheck(
       output_scale_offset_by_experts.device() == input.device(),
       "output_scale_offset_by_experts and input must be on same device");
@@ -579,8 +580,7 @@ void scaled_fp4_experts_quant_sm100a(
   RuntimeCheck(host::is_type<float>(input_global_scale.dtype()), "input_global_scale must be fp32");
   RuntimeCheck(host::is_type<int32_t>(input_offset_by_experts.dtype()), "input_offset_by_experts must be int32");
   RuntimeCheck(
-      host::is_type<int32_t>(output_scale_offset_by_experts.dtype()),
-      "output_scale_offset_by_experts must be int32");
+      host::is_type<int32_t>(output_scale_offset_by_experts.dtype()), "output_scale_offset_by_experts must be int32");
   RuntimeCheck(host::is_type<uint8_t>(output.dtype()), "output must be uint8");
   RuntimeCheck(host::is_type<int32_t>(output_scale.dtype()), "output_scale must be int32");
 
@@ -593,9 +593,7 @@ void scaled_fp4_experts_quant_sm100a(
   RuntimeCheck(k % BLOCK_SIZE == 0, "k must be a multiple of 16");
   const auto n_experts = static_cast<int>(input_global_scale.size(0));
   RuntimeCheck(input_offset_by_experts.size(0) == n_experts + 1, "input_offset_by_experts size mismatch");
-  RuntimeCheck(
-      output_scale_offset_by_experts.size(0) == n_experts + 1,
-      "output_scale_offset_by_experts size mismatch");
+  RuntimeCheck(output_scale_offset_by_experts.size(0) == n_experts + 1, "output_scale_offset_by_experts size mismatch");
   RuntimeCheck(output.size(0) == m_topk, "output first dim mismatch");
   RuntimeCheck(output.size(1) == k / 2, "output second dim mismatch");
   const int scales_k = k / BLOCK_SIZE;

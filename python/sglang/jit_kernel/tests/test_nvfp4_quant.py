@@ -98,7 +98,9 @@ def recover_swizzled_scales(scale: torch.Tensor, m: int, n: int) -> torch.Tensor
     return result[:m, :scale_n]
 
 
-@pytest.mark.skipif(not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0")
+@pytest.mark.skipif(
+    not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0"
+)
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("shape", SHAPES)
 def test_quantize_to_fp4(dtype: torch.dtype, shape: tuple[int, int]) -> None:
@@ -118,7 +120,9 @@ def test_quantize_to_fp4(dtype: torch.dtype, shape: tuple[int, int]) -> None:
     torch.testing.assert_close(scale_ans, scale_ref)
 
 
-@pytest.mark.skipif(not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0")
+@pytest.mark.skipif(
+    not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0"
+)
 @pytest.mark.parametrize("shape", PAD_SHAPES)
 def test_quantize_to_fp4_padded(shape: tuple[int, int]) -> None:
     torch.manual_seed(42)
@@ -137,7 +141,9 @@ def test_quantize_to_fp4_padded(shape: tuple[int, int]) -> None:
     torch.testing.assert_close(scale_ans, scale_ref)
 
 
-@pytest.mark.skipif(not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0")
+@pytest.mark.skipif(
+    not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0"
+)
 @pytest.mark.parametrize("shape", [(2, 128, 512), (2, 100, 128)])
 def test_quantize_to_fp4_grouped(shape: tuple[int, int, int]) -> None:
     torch.manual_seed(42)
@@ -161,7 +167,9 @@ def test_quantize_to_fp4_grouped(shape: tuple[int, int, int]) -> None:
         torch.testing.assert_close(scale_ref[: mask[i]], scale_ans[: mask[i]])
 
 
-@pytest.mark.skipif(not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0")
+@pytest.mark.skipif(
+    not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0"
+)
 @pytest.mark.parametrize("shape", [(4, 96, 256), (8, 128, 512)])
 def test_silu_and_mul_quantize_to_fp4_grouped(shape: tuple[int, int, int]) -> None:
     torch.manual_seed(42)
@@ -185,7 +193,9 @@ def test_silu_and_mul_quantize_to_fp4_grouped(shape: tuple[int, int, int]) -> No
 
     padded_m = ((m + 128 - 1) // 128) * 128
     output_scales = output_scales.permute(5, 2, 4, 0, 1, 3).view(l, padded_m, -1)
-    ref_output_scales = ref_output_scales.permute(5, 2, 4, 0, 1, 3).view(l, padded_m, -1)
+    ref_output_scales = ref_output_scales.permute(5, 2, 4, 0, 1, 3).view(
+        l, padded_m, -1
+    )
 
     for i in range(l):
         torch.testing.assert_close(ref_output[i, : mask[i]], output[i, : mask[i]])

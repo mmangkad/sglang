@@ -6,7 +6,6 @@ import triton
 from sglang.jit_kernel.benchmark.utils import get_benchmark_range, run_benchmark
 from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm, scaled_fp4_quant
 
-
 FLOAT4_E2M1_MAX = 6.0
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 BLOCK_SIZE = 16
@@ -31,7 +30,9 @@ K_E2M1_TO_FLOAT = [
 ]
 
 
-def _dequantize_to_fp16(tensor_fp4: torch.Tensor, tensor_sf: torch.Tensor, global_scale: torch.Tensor):
+def _dequantize_to_fp16(
+    tensor_fp4: torch.Tensor, tensor_sf: torch.Tensor, global_scale: torch.Tensor
+):
     m, packed_k = tensor_fp4.shape
     k = packed_k * 2
     flat = tensor_fp4.flatten()
@@ -78,15 +79,21 @@ def benchmark(shape, provider):
     a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
     b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
 
-    a_global_scale = (FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(a.flatten(), dim=-1)).to(torch.float32)
-    b_global_scale = (FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(b.flatten(), dim=-1)).to(torch.float32)
+    a_global_scale = (
+        FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(a.flatten(), dim=-1)
+    ).to(torch.float32)
+    b_global_scale = (
+        FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(b.flatten(), dim=-1)
+    ).to(torch.float32)
     alpha = 1.0 / (a_global_scale * b_global_scale)
 
     a_fp4, a_sf = scaled_fp4_quant(a, a_global_scale)
     b_fp4, b_sf = scaled_fp4_quant(b, b_global_scale)
 
     if provider == "jit":
-        fn = lambda: cutlass_scaled_fp4_mm(a_fp4, b_fp4, a_sf, b_sf, alpha, torch.bfloat16)
+        fn = lambda: cutlass_scaled_fp4_mm(
+            a_fp4, b_fp4, a_sf, b_sf, alpha, torch.bfloat16
+        )
     elif provider == "torch_ref":
         a_ref = _dequantize_to_fp16(a_fp4, a_sf, a_global_scale)
         b_ref = _dequantize_to_fp16(b_fp4, b_sf, b_global_scale)

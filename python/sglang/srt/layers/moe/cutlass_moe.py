@@ -20,6 +20,7 @@ if _is_cuda:
         shuffle_rows,
         silu_and_mul,
     )
+
     from sglang.jit_kernel.nvfp4 import scaled_fp4_experts_quant
 
 

@@ -95,7 +95,9 @@ def get_ref_results(
     return torch.matmul(a_in_dtype, b_in_dtype.t())
 
 
-@pytest.mark.skipif(not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0")
+@pytest.mark.skipif(
+    not _nvfp4_supported(), reason="NVFP4 requires compute capability >= 10.0"
+)
 @pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("shape", SHAPES)
 def test_nvfp4_gemm(dtype: torch.dtype, shape: tuple[int, int, int]) -> None:

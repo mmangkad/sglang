@@ -168,7 +168,9 @@ def cutlass_scaled_fp4_mm(
     alpha: torch.Tensor,
     out_dtype: torch.dtype,
 ) -> torch.Tensor:
-    from sglang.jit_kernel.nvfp4 import cutlass_scaled_fp4_mm as jit_cutlass_scaled_fp4_mm
+    from sglang.jit_kernel.nvfp4 import (
+        cutlass_scaled_fp4_mm as jit_cutlass_scaled_fp4_mm,
+    )
 
     return jit_cutlass_scaled_fp4_mm(
         a,
@@ -303,7 +305,9 @@ def scaled_fp4_grouped_quant(
         `4 * rk` is a padded `k // 16` to nearest multiple of 4. These layout constants are
         required by the NVIDIA Blackwell MMA operations.
     """
-    from sglang.jit_kernel.nvfp4 import scaled_fp4_grouped_quant as jit_scaled_fp4_grouped_quant
+    from sglang.jit_kernel.nvfp4 import (
+        scaled_fp4_grouped_quant as jit_scaled_fp4_grouped_quant,
+    )
 
     return jit_scaled_fp4_grouped_quant(input_tensor, input_global_scale, mask)
 
@@ -365,7 +369,9 @@ def scaled_fp4_experts_quant(
         output: The quantized tensor in FP4
         output_scales: The blockscale tensor in FP8-E4M3
     """
-    from sglang.jit_kernel.nvfp4 import scaled_fp4_experts_quant as jit_scaled_fp4_experts_quant
+    from sglang.jit_kernel.nvfp4 import (
+        scaled_fp4_experts_quant as jit_scaled_fp4_experts_quant,
+    )
 
     return jit_scaled_fp4_experts_quant(
         input_tensor=input_tensor,

@@ -13,12 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cuda_runtime.h>
+#include <sgl_kernel/tensor.h>
+#include <sgl_kernel/utils.h>
 
 #include <sgl_kernel/runtime.cuh>
-#include <sgl_kernel/tensor.h>
 #include <sgl_kernel/utils.cuh>
-#include <sgl_kernel/utils.h>
+
+#include <cuda_runtime.h>
 
 using namespace host;
 
@@ -34,9 +35,9 @@ using namespace host;
 /**
  * Helper function for checking CUTLASS errors
  */
-#define CUTLASS_CHECK(status)                                                     \
-  {                                                                               \
-    cutlass::Status error = status;                                               \
+#define CUTLASS_CHECK(status)                                                        \
+  {                                                                                  \
+    cutlass::Status error = status;                                                  \
     RuntimeCheck(error == cutlass::Status::kSuccess, cutlassGetStatusString(error)); \
   }
 
@@ -624,18 +625,8 @@ void cutlass_scaled_fp4_mm_sm100a_sm120a(
   RuntimeCheck(D.size(1) == n, "out second dim must equal n");
 
   constexpr int alignment = 32;
-  RuntimeCheck(
-      k % alignment == 0,
-      "Expected k to be divisible by ",
-      alignment,
-      ", but got k: ",
-      k);
-  RuntimeCheck(
-      n % alignment == 0,
-      "Expected n to be divisible by ",
-      alignment,
-      ", but got n: ",
-      n);
+  RuntimeCheck(k % alignment == 0, "Expected k to be divisible by ", alignment, ", but got k: ", k);
+  RuntimeCheck(n % alignment == 0, "Expected n to be divisible by ", alignment, ", but got n: ", n);
 
   auto round_up = [](int64_t x, int64_t y) { return (x + y - 1) / y * y; };
   const int64_t rounded_m = round_up(m, 128);
