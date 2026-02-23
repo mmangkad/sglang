@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 import triton
 
@@ -34,7 +36,7 @@ def _blockscale_offsets(m_per_expert: list[int], device: torch.device) -> torch.
 
 def _prepare_case(
     total_tokens: int, n: int, k: int, num_experts: int, dtype: torch.dtype
-) -> dict[str, torch.Tensor]:
+) -> dict[str, Any]:
     device = torch.device("cuda")
     base = total_tokens // num_experts
     rem = total_tokens % num_experts
@@ -51,7 +53,9 @@ def _prepare_case(
         start = int(expert_offsets_full[i].item())
         end = int(expert_offsets_full[i + 1].item())
         a_global_scale[i] = (
-            FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / a[start:end].abs().max().to(torch.float32)
+            FLOAT8_E4M3_MAX
+            * FLOAT4_E2M1_MAX
+            / a[start:end].abs().max().to(torch.float32)
         )
 
     b_global_scale = torch.empty((num_experts,), device=device, dtype=torch.float32)
@@ -98,6 +102,13 @@ def _prepare_case(
         "layout_sfb": torch.empty((num_experts, 5), dtype=torch.int64, device=device),
     }
 
+    expert_ranges: list[tuple[int, int]] = []
+    start = 0
+    for m in m_per_expert:
+        end = start + m
+        expert_ranges.append((start, end))
+        start = end
+
     return {
         "a": a,
         "b": b,
@@ -108,27 +119,25 @@ def _prepare_case(
         "alphas": alphas,
         "params": params,
         "expert_offsets_full": expert_offsets_full,
+        "expert_ranges": expert_ranges,
         "dtype": dtype,
     }
 
 
-def _torch_ref_group_mm(case: dict[str, torch.Tensor]) -> torch.Tensor:
+def _torch_ref_group_mm(case: dict[str, Any]) -> torch.Tensor:
     a = case["a"]
     b = case["b"]
     dtype = case["dtype"]
-    expert_offsets = case["expert_offsets_full"]
+    expert_ranges = case["expert_ranges"]
     total_tokens = a.shape[0]
     n = b.shape[1]
     out = torch.empty((total_tokens, n), device=a.device, dtype=dtype)
-    num_experts = b.shape[0]
-    for i in range(num_experts):
-        start = int(expert_offsets[i].item())
-        end = int(expert_offsets[i + 1].item())
+    for i, (start, end) in enumerate(expert_ranges):
         out[start:end] = torch.matmul(a[start:end], b[i].t())
     return out
 
 
-def _aot_cutlass_fp4_group_mm(case: dict[str, torch.Tensor]) -> torch.Tensor:
+def _aot_cutlass_fp4_group_mm(case: dict[str, Any]) -> torch.Tensor:
     a_fp4 = case["a_fp4"]
     b_fp4 = case["b_fp4"]
     a_blockscale = case["a_blockscale"]
@@ -235,5 +244,7 @@ def benchmark(total_tokens, n, k, num_experts, provider):
 
 if __name__ == "__main__":
     if not _AOT_GROUP_MM_AVAILABLE:
-        print(f"[info] legacy AOT grouped_mm baseline unavailable: {_AOT_GROUP_MM_REASON}")
+        print(
+            f"[info] legacy AOT grouped_mm baseline unavailable: {_AOT_GROUP_MM_REASON}"
+        )
     benchmark.run(print_data=True)
