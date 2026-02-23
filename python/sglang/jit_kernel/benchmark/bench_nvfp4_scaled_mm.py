@@ -54,10 +54,70 @@ def _dequantize_to_fp16(
     return (val.view(m, scale_n, BLOCK_SIZE) * scale.unsqueeze(-1)).reshape(m, k)
 
 
+def _aot_cutlass_scaled_fp4_mm(
+    a: torch.Tensor,
+    b: torch.Tensor,
+    block_scale_a: torch.Tensor,
+    block_scale_b: torch.Tensor,
+    alpha: torch.Tensor,
+    out_dtype: torch.dtype,
+) -> torch.Tensor:
+    out = torch.empty((a.shape[0], b.shape[0]), dtype=out_dtype, device=a.device)
+    torch.ops.sgl_kernel.cutlass_scaled_fp4_mm.default(
+        out, a, b, block_scale_a, block_scale_b, alpha
+    )
+    return out
+
+
+def _probe_legacy_aot_scaled_mm() -> tuple[bool, str]:
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available."
+    try:
+        import sgl_kernel  # noqa: F401
+    except Exception as e:
+        return False, f"import sgl_kernel failed: {e}"
+    if not hasattr(torch.ops, "sgl_kernel"):
+        return False, "torch.ops.sgl_kernel is not registered."
+    op = getattr(torch.ops.sgl_kernel, "cutlass_scaled_fp4_mm", None)
+    if op is None or not hasattr(op, "default"):
+        return False, "torch.ops.sgl_kernel.cutlass_scaled_fp4_mm.default is missing."
+    try:
+        m, n, k = 16, 32, 64
+        a = torch.randn((m, k), dtype=torch.bfloat16, device="cuda")
+        b = torch.randn((n, k), dtype=torch.bfloat16, device="cuda")
+        a_global_scale = (
+            FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(a.flatten(), dim=-1)
+        ).to(torch.float32)
+        b_global_scale = (
+            FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.amax(b.flatten(), dim=-1)
+        ).to(torch.float32)
+        alpha = 1.0 / (a_global_scale * b_global_scale)
+        a_fp4, a_sf = scaled_fp4_quant(a, a_global_scale)
+        b_fp4, b_sf = scaled_fp4_quant(b, b_global_scale)
+        _aot_cutlass_scaled_fp4_mm(a_fp4, b_fp4, a_sf, b_sf, alpha, torch.bfloat16)
+        torch.cuda.synchronize()
+    except Exception as e:
+        return False, f"calling AOT scaled_mm op failed: {e}"
+    return True, ""
+
+
+_AOT_SCALED_MM_AVAILABLE, _AOT_SCALED_MM_REASON = _probe_legacy_aot_scaled_mm()
+
 shape_range = get_benchmark_range(
     full_range=[(128, 4096, 4096), (512, 4096, 4096), (1024, 8192, 4096)],
     ci_range=[(128, 4096, 4096)],
 )
+
+line_vals = ["jit"]
+line_names = ["JIT NVFP4 GEMM"]
+styles = [("green", "-")]
+if _AOT_SCALED_MM_AVAILABLE:
+    line_vals.append("aot_sgl_kernel")
+    line_names.append("AOT NVFP4 GEMM")
+    styles.append(("orange", "-"))
+line_vals.append("torch_ref")
+line_names.append("Torch Ref")
+styles.append(("blue", "-"))
 
 
 @triton.testing.perf_report(
@@ -66,9 +126,9 @@ shape_range = get_benchmark_range(
         x_vals=shape_range,
         x_log=False,
         line_arg="provider",
-        line_vals=["jit", "torch_ref"],
-        line_names=["JIT NVFP4 GEMM", "Torch Ref"],
-        styles=[("green", "-"), ("blue", "-")],
+        line_vals=line_vals,
+        line_names=line_names,
+        styles=styles,
         ylabel="us",
         plot_name="nvfp4-scaled-mm-performance",
         args={},
@@ -93,6 +153,10 @@ def benchmark(m, n, k, provider):
         fn = lambda: cutlass_scaled_fp4_mm(
             a_fp4, b_fp4, a_sf, b_sf, alpha, torch.bfloat16
         )
+    elif provider == "aot_sgl_kernel":
+        fn = lambda: _aot_cutlass_scaled_fp4_mm(
+            a_fp4, b_fp4, a_sf, b_sf, alpha, torch.bfloat16
+        )
     elif provider == "torch_ref":
         a_ref = _dequantize_to_fp16(a_fp4, a_sf, a_global_scale)
         b_ref = _dequantize_to_fp16(b_fp4, b_sf, b_global_scale)
@@ -104,4 +168,8 @@ def benchmark(m, n, k, provider):
 
 
 if __name__ == "__main__":
+    if not _AOT_SCALED_MM_AVAILABLE:
+        print(
+            f"[info] legacy AOT scaled_mm baseline unavailable: {_AOT_SCALED_MM_REASON}"
+        )
     benchmark.run(print_data=True)

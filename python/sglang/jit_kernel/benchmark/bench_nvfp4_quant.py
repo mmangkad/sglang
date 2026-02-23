@@ -36,10 +36,62 @@ def _torch_ref_quant(input: torch.Tensor, input_global_scale: torch.Tensor):
     return rounded, scale
 
 
+def _aot_scaled_fp4_quant(input: torch.Tensor, input_global_scale: torch.Tensor):
+    m, n = input.shape
+    output = torch.empty((m, n // 2), device=input.device, dtype=torch.uint8)
+    rounded_m = ((m + 128 - 1) // 128) * 128
+    scale_n = n // BLOCK_SIZE
+    rounded_n = ((scale_n + 4 - 1) // 4) * 4
+    output_scale = torch.empty(
+        (rounded_m, rounded_n // 4), device=input.device, dtype=torch.int32
+    )
+    torch.ops.sgl_kernel.scaled_fp4_quant.default(
+        output, input, output_scale, input_global_scale
+    )
+    return output, output_scale.view(torch.float8_e4m3fn)
+
+
+def _probe_legacy_aot_quant() -> tuple[bool, str]:
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available."
+    try:
+        import sgl_kernel  # noqa: F401
+    except Exception as e:
+        return False, f"import sgl_kernel failed: {e}"
+    if not hasattr(torch.ops, "sgl_kernel"):
+        return False, "torch.ops.sgl_kernel is not registered."
+    op = getattr(torch.ops.sgl_kernel, "scaled_fp4_quant", None)
+    if op is None or not hasattr(op, "default"):
+        return False, "torch.ops.sgl_kernel.scaled_fp4_quant.default is missing."
+    try:
+        x = torch.randn((16, 64), dtype=torch.bfloat16, device="cuda")
+        global_scale = (
+            FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / torch.abs(x).max().to(torch.float32)
+        )
+        _aot_scaled_fp4_quant(x, global_scale)
+        torch.cuda.synchronize()
+    except Exception as e:
+        return False, f"calling AOT quant op failed: {e}"
+    return True, ""
+
+
+_AOT_QUANT_AVAILABLE, _AOT_QUANT_REASON = _probe_legacy_aot_quant()
+
 shape_range = get_benchmark_range(
     full_range=[(128, 2048), (512, 4096), (1024, 4096), (2048, 8192)],
     ci_range=[(128, 2048)],
 )
+
+line_vals = ["jit"]
+line_names = ["JIT NVFP4 Quant"]
+styles = [("green", "-")]
+if _AOT_QUANT_AVAILABLE:
+    line_vals.append("aot_sgl_kernel")
+    line_names.append("AOT NVFP4 Quant")
+    styles.append(("orange", "-"))
+line_vals.append("torch_ref")
+line_names.append("Torch Ref")
+styles.append(("blue", "-"))
 
 
 @triton.testing.perf_report(
@@ -48,9 +100,9 @@ shape_range = get_benchmark_range(
         x_vals=shape_range,
         x_log=False,
         line_arg="provider",
-        line_vals=["jit", "torch_ref"],
-        line_names=["JIT NVFP4 Quant", "Torch Ref"],
-        styles=[("green", "-"), ("blue", "-")],
+        line_vals=line_vals,
+        line_names=line_names,
+        styles=styles,
         ylabel="us",
         plot_name="nvfp4-quant-performance",
         args={},
@@ -63,6 +115,8 @@ def benchmark(m, n, provider):
 
     if provider == "jit":
         fn = lambda: scaled_fp4_quant(x, global_scale)
+    elif provider == "aot_sgl_kernel":
+        fn = lambda: _aot_scaled_fp4_quant(x, global_scale)
     elif provider == "torch_ref":
         fn = lambda: _torch_ref_quant(x, global_scale)
     else:
@@ -72,4 +126,6 @@ def benchmark(m, n, provider):
 
 
 if __name__ == "__main__":
+    if not _AOT_QUANT_AVAILABLE:
+        print(f"[info] legacy AOT quant baseline unavailable: {_AOT_QUANT_REASON}")
     benchmark.run(print_data=True)
