@@ -194,6 +194,29 @@ def _jit_nvfp4_scaled_mm_module() -> Module:
         )
 
 
+@cache_once
+def _jit_nvfp4_blockwise_moe_module() -> Module:
+    extra_include_paths = _resolve_cutlass_include_paths()
+    if not extra_include_paths:
+        raise RuntimeError(
+            "Cannot find CUTLASS headers required for NVFP4 JIT MoE grouped GEMM. "
+            "Please install flashinfer or deep_gemm with CUTLASS headers."
+        )
+
+    with _nvfp4_arch_env():
+        return load_jit(
+            "nvfp4_blockwise_moe",
+            cuda_files=[
+                "moe/nvfp4_blockwise_moe.cuh",
+            ],
+            cuda_wrappers=[
+                ("cutlass_fp4_group_mm", "cutlass_fp4_group_mm_sm100a_sm120a")
+            ],
+            extra_include_paths=extra_include_paths,
+            extra_cuda_cflags=_nvfp4_cuda_flags(),
+        )
+
+
 def cutlass_scaled_fp4_mm(
     a: torch.Tensor,
     b: torch.Tensor,
@@ -208,6 +231,72 @@ def cutlass_scaled_fp4_mm(
     module = _jit_nvfp4_scaled_mm_module()
     module.cutlass_scaled_fp4_mm(out, a, b, block_scale_a, block_scale_b, alpha)
     return out
+
+
+def cutlass_fp4_group_mm(
+    a_fp4: torch.Tensor,
+    b_fp4: torch.Tensor,
+    a_blockscale: torch.Tensor,
+    b_blockscale: torch.Tensor,
+    alphas: torch.Tensor,
+    out_dtype: torch.dtype,
+    params: dict[str, torch.Tensor],
+) -> torch.Tensor:
+    m_topk = a_fp4.shape[0]
+    n = b_fp4.shape[1]
+    output = torch.empty((m_topk, n), device=a_fp4.device, dtype=out_dtype)
+    num_experts = int(params["expert_offsets"].numel())
+    device = a_fp4.device
+
+    # Backward compatibility: older callers may not pass scratch tensors.
+    a_ptrs = params.get(
+        "a_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    b_ptrs = params.get(
+        "b_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    out_ptrs = params.get(
+        "out_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    a_scales_ptrs = params.get(
+        "a_scales_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    b_scales_ptrs = params.get(
+        "b_scales_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    alpha_ptrs = params.get(
+        "alpha_ptrs", torch.empty((num_experts,), dtype=torch.int64, device=device)
+    )
+    layout_sfa = params.get(
+        "layout_sfa", torch.empty((num_experts, 5), dtype=torch.int64, device=device)
+    )
+    layout_sfb = params.get(
+        "layout_sfb", torch.empty((num_experts, 5), dtype=torch.int64, device=device)
+    )
+
+    module = _jit_nvfp4_blockwise_moe_module()
+    module.cutlass_fp4_group_mm(
+        output,
+        a_fp4,
+        b_fp4,
+        a_blockscale,
+        b_blockscale,
+        alphas,
+        params["ab_strides"],
+        params["c_strides"],
+        params["problem_sizes"],
+        params["expert_offsets"],
+        params["blockscale_offsets"],
+        a_ptrs,
+        b_ptrs,
+        out_ptrs,
+        a_scales_ptrs,
+        b_scales_ptrs,
+        alpha_ptrs,
+        layout_sfa,
+        layout_sfb,
+    )
+    return output
 
 
 def scaled_fp4_quant(

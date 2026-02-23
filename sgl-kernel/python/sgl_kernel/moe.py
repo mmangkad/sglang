@@ -316,21 +316,18 @@ def cutlass_fp4_group_mm(
     - problem_sizes: MxNxK sizes of each expert's multiplication in two grouped
                      MMs used in the fused MoE operation.
     """
-    m_topk = a_fp4.shape[0]
-    n = b_fp4.shape[1]
-    c_shape = (m_topk, n)
-    c = torch.empty(c_shape, device=device, dtype=out_dtype)
-    torch.ops.sgl_kernel.cutlass_fp4_group_mm.default(
-        c,
+    del device  # Kept for backward-compatible call sites.
+
+    from sglang.jit_kernel.nvfp4 import (
+        cutlass_fp4_group_mm as jit_cutlass_fp4_group_mm,
+    )
+
+    return jit_cutlass_fp4_group_mm(
         a_fp4,
         b_fp4,
         a_blockscale,
         b_blockscale,
         alphas,
-        params["ab_strides"],
-        params["c_strides"],
-        params["problem_sizes"],
-        params["expert_offsets"],
-        params["blockscale_offsets"],
+        out_dtype,
+        params,
     )
-    return c.to(dtype=out_dtype)

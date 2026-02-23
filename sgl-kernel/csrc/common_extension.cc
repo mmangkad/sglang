@@ -160,13 +160,6 @@ TORCH_LIBRARY_FRAGMENT(sgl_kernel, m) {
   m.def("dsv3_fused_a_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
   m.impl("dsv3_fused_a_gemm", torch::kCUDA, &dsv3_fused_a_gemm);
 
-  m.def(
-      "cutlass_fp4_group_mm(Tensor! output, Tensor a, Tensor b,"
-      "Tensor a_blockscale, Tensor b_blockscale, Tensor alphas,"
-      "Tensor ab_strides, Tensor c_strides, Tensor problem_sizes,"
-      " Tensor expert_offsets, Tensor sf_offsets) -> ()");
-  m.impl("cutlass_fp4_group_mm", torch::kCUDA, &cutlass_fp4_group_mm);
-
   m.def("dsv3_router_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
   m.impl("dsv3_router_gemm", torch::kCUDA, &dsv3_router_gemm);
 
