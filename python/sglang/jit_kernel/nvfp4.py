@@ -373,22 +373,23 @@ def scaled_fp4_experts_quant(
         " MODELOPT_MAX_TOKENS_PER_EXPERT to set this value."
     )
     scales_k = k // 16
-    padded_k = (scales_k + (4 - 1)) // 4
+    # output_scales is int32-packed FP8 scales, so second dim is in int32 units.
+    padded_k_in_int32 = (scales_k + 3) // 4
 
     output = torch.empty(
         m_numtopk, k // 2, device=input_tensor.device, dtype=torch.uint8
     )
-    if padded_k > scales_k:
+    if padded_k_in_int32 * 4 > scales_k:
         output_scales = torch.zeros(
             max_tokens_per_expert * topk,
-            padded_k,
+            padded_k_in_int32,
             dtype=torch.int32,
             device=input_tensor.device,
         )
     else:
         output_scales = torch.empty(
             max_tokens_per_expert * topk,
-            padded_k,
+            padded_k_in_int32,
             dtype=torch.int32,
             device=input_tensor.device,
         )
