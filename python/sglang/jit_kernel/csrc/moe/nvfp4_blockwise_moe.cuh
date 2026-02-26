@@ -1,16 +1,11 @@
-#include <sgl_kernel/runtime.cuh>
 #include <sgl_kernel/tensor.h>
 #include <sgl_kernel/utils.h>
+
+#include <sgl_kernel/runtime.cuh>
 #include <sgl_kernel/utils.cuh>
 
-#include <cutlass/cutlass.h>
 #include <cutlass/arch/arch.h>
-
-#include <algorithm>
-#include <cassert>
-#include <cstdint>
-#include <limits>
-#include <unordered_map>
+#include <cutlass/cutlass.h>
 
 #include "cute/tensor.hpp"
 #include "cutlass/epilogue/collective/collective_builder.hpp"
@@ -33,6 +28,11 @@
 #include "cutlass/util/reference/host/tensor_fill.h"
 #include "cutlass/util/reference/host/tensor_norm.h"
 #include "cutlass/util/tensor_view_io.h"
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <limits>
+#include <unordered_map>
 
 using namespace host;
 using namespace cute;
@@ -161,7 +161,7 @@ __global__ void __get_group_gemm_starts(
 }
 
 #define __CALL_GET_STARTS_KERNEL_BLOCKSCALE(                                                            \
-    ELEMENT_AB_TYPE, SF_TYPE, TYPE_CHECK, C_TYPE, LayoutSFA, LayoutSFB, ScaleConfig)                     \
+    ELEMENT_AB_TYPE, SF_TYPE, TYPE_CHECK, C_TYPE, LayoutSFA, LayoutSFB, ScaleConfig)                    \
   else if (TYPE_CHECK) {                                                                                \
     __get_group_gemm_starts<ELEMENT_AB_TYPE, C_TYPE, SF_TYPE, float, LayoutSFA, LayoutSFB, ScaleConfig> \
         <<<1, num_experts, 0, stream>>>(                                                                \
@@ -688,8 +688,8 @@ void cutlass_fp4_group_mm_sm100a_sm120a(
           a.device() == c_strides.device() && a.device() == problem_sizes.device() &&
           a.device() == expert_offsets.device() && a.device() == sf_offsets.device() && a.device() == a_ptrs.device() &&
           a.device() == b_ptrs.device() && a.device() == out_ptrs.device() && a.device() == a_scales_ptrs.device() &&
-          a.device() == b_scales_ptrs.device() && a.device() == alpha_ptrs.device() && a.device() == layout_sfa.device() &&
-          a.device() == layout_sfb.device(),
+          a.device() == b_scales_ptrs.device() && a.device() == alpha_ptrs.device() &&
+          a.device() == layout_sfa.device() && a.device() == layout_sfb.device(),
       "all tensors must be on the same device");
 
   RuntimeCheck(host::is_type<uint8_t>(a.dtype()), "a must be uint8");

@@ -145,8 +145,12 @@ class CutlassMoEParams:
             (self.e,), dtype=torch.int64, device=self.device
         )
         self.alpha_ptrs = torch.empty((self.e,), dtype=torch.int64, device=self.device)
-        self.layout_sfa = torch.empty((self.e, 5), dtype=torch.int64, device=self.device)
-        self.layout_sfb = torch.empty((self.e, 5), dtype=torch.int64, device=self.device)
+        self.layout_sfa = torch.empty(
+            (self.e, 5), dtype=torch.int64, device=self.device
+        )
+        self.layout_sfb = torch.empty(
+            (self.e, 5), dtype=torch.int64, device=self.device
+        )
 
     def to_gemm1_args(self) -> dict:
         return {

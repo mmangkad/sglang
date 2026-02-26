@@ -19,14 +19,18 @@ def _round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
 
 
-def _build_expert_offsets(m_per_expert: list[int], device: torch.device) -> torch.Tensor:
+def _build_expert_offsets(
+    m_per_expert: list[int], device: torch.device
+) -> torch.Tensor:
     offsets = [0]
     for m in m_per_expert:
         offsets.append(offsets[-1] + m)
     return torch.tensor(offsets, dtype=torch.int32, device=device)
 
 
-def _build_blockscale_offsets(m_per_expert: list[int], device: torch.device) -> torch.Tensor:
+def _build_blockscale_offsets(
+    m_per_expert: list[int], device: torch.device
+) -> torch.Tensor:
     offsets = [0]
     for m in m_per_expert:
         offsets.append(offsets[-1] + _round_up(m, 128))

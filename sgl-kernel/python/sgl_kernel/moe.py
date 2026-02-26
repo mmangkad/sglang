@@ -318,9 +318,7 @@ def cutlass_fp4_group_mm(
     """
     del device  # Kept for backward-compatible call sites.
 
-    from sglang.jit_kernel.nvfp4 import (
-        cutlass_fp4_group_mm as jit_cutlass_fp4_group_mm,
-    )
+    from sglang.jit_kernel.nvfp4 import cutlass_fp4_group_mm as jit_cutlass_fp4_group_mm
 
     return jit_cutlass_fp4_group_mm(
         a_fp4,
