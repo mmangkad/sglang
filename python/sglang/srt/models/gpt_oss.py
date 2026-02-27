@@ -25,6 +25,11 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+try:
+    from flashinfer.gemm import tinygemm_bf16 as flashinfer_tinygemm_bf16
+except Exception:
+    flashinfer_tinygemm_bf16 = None
+
 from sglang.srt.compilation.piecewise_context_manager import (
     get_forward_context,
     is_in_piecewise_cuda_graph,
@@ -97,6 +102,93 @@ def get_attention_sliding_window_size(config):
     return config.sliding_window - 1
 
 
+class GptOssRouterLinear(ReplicatedLinear):
+    """ReplicatedLinear with optional FlashInfer tinygemm2 BF16 fast path."""
+
+    def __init__(self, *args, **kwargs):
+        self._router_prefix = kwargs.get("prefix", "")
+        super().__init__(*args, **kwargs)
+        self._disable_tinygemm = False
+        self._logged_tinygemm_enabled = False
+        self._logged_tinygemm_disabled = False
+        self._logged_tinygemm_runtime_error = False
+
+    def _can_use_tinygemm(self, x: torch.Tensor) -> Tuple[bool, str]:
+        if self._disable_tinygemm:
+            return False, "disabled_after_runtime_error"
+        if flashinfer_tinygemm_bf16 is None:
+            return False, "flashinfer_tinygemm_unavailable"
+        if self.skip_bias_add:
+            return False, "skip_bias_add_enabled"
+        if x.device.type != "cuda" or x.ndim != 2 or x.numel() == 0:
+            return False, "input_must_be_nonempty_2d_cuda"
+        if x.dtype != torch.bfloat16:
+            return False, f"input_dtype_{x.dtype}_not_bf16"
+        if self.weight.dtype != torch.bfloat16:
+            return False, f"weight_dtype_{self.weight.dtype}_not_bf16"
+        if self.bias is not None and self.bias.dtype != torch.bfloat16:
+            return False, f"bias_dtype_{self.bias.dtype}_not_bf16"
+        if not x.is_contiguous() or not self.weight.is_contiguous():
+            return False, "input_or_weight_not_contiguous"
+        if self.bias is not None and not self.bias.is_contiguous():
+            return False, "bias_not_contiguous"
+        if x.shape[1] != self.weight.shape[1]:
+            return False, "input_weight_k_mismatch"
+
+        # tinygemm2 constraints
+        if x.shape[1] % 64 != 0:
+            return False, f"k_{x.shape[1]}_not_multiple_of_64"
+        if self.weight.shape[0] % 16 != 0:
+            return False, f"n_{self.weight.shape[0]}_not_multiple_of_16"
+
+        cc_major, _ = torch.cuda.get_device_capability(x.device)
+        if cc_major < 9:
+            return False, f"sm_{cc_major}_lt_90"
+
+        return True, "ok"
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        use_tinygemm, reason = self._can_use_tinygemm(x)
+        if use_tinygemm:
+            # TODO(remove): temporary debug logging for validating GPT-OSS router GEMM path.
+            if not self._logged_tinygemm_enabled:
+                logger.info(
+                    "[TODO_REMOVE][gpt_oss_router] tinygemm_bf16 ENABLED for %s (M=%d, K=%d, N=%d)",
+                    self._router_prefix,
+                    x.shape[0],
+                    x.shape[1],
+                    self.output_size,
+                )
+                self._logged_tinygemm_enabled = True
+            out = torch.empty(
+                (x.shape[0], self.output_size),
+                device=x.device,
+                dtype=x.dtype,
+            )
+            try:
+                flashinfer_tinygemm_bf16(x, self.weight, out, bias=self.bias)
+                return out, None
+            except Exception as e:
+                self._disable_tinygemm = True
+                if not self._logged_tinygemm_runtime_error:
+                    logger.warning(
+                        "[TODO_REMOVE][gpt_oss_router] tinygemm_bf16 runtime failure for %s; fallback to ReplicatedLinear. error=%s",
+                        self._router_prefix,
+                        repr(e),
+                    )
+                    self._logged_tinygemm_runtime_error = True
+        elif not self._logged_tinygemm_disabled:
+            # TODO(remove): temporary debug logging for validating GPT-OSS router GEMM path.
+            logger.info(
+                "[TODO_REMOVE][gpt_oss_router] tinygemm_bf16 DISABLED for %s; using ReplicatedLinear fallback. reason=%s",
+                self._router_prefix,
+                reason,
+            )
+            self._logged_tinygemm_disabled = True
+
+        return super().forward(x)
+
+
 class GptOssSparseMoeBlock(nn.Module):
     def __init__(
         self,
@@ -147,7 +239,7 @@ class GptOssSparseMoeBlock(nn.Module):
             **extra_kwargs,
         )
 
-        self.router = ReplicatedLinear(
+        self.router = GptOssRouterLinear(
             config.hidden_size,
             config.num_local_experts,
             bias=True,
