@@ -52,6 +52,7 @@ from sglang.srt.layers.radix_attention import RadixAttention
 from sglang.srt.utils.common import (
     get_bool_env_var,
     is_cuda,
+    is_sm100_supported,
     is_sm120_supported,
     next_power_of_2,
 )
@@ -69,7 +70,7 @@ if TYPE_CHECKING:
 
 fp4_quantize = None
 try:
-    if is_sm120_supported():
+    if is_sm100_supported() or is_sm120_supported():
         try:
             from flashinfer import fp4_quantize
         except ImportError:
@@ -143,7 +144,11 @@ def fp4_gemm(
         return cutlass_fp4_gemm(input, weight, input_sf, weight_sf, alpha, out_dtype)
 
 
-if is_cuda() and (not is_sm120_supported()) and (fp4_quantize is not None):
+if (
+    is_cuda()
+    and (not (is_sm100_supported() or is_sm120_supported()))
+    and (fp4_quantize is not None)
+):
 
     @register_fake_if_exists("sgl_kernel::scaled_fp4_quant")
     def _sgl_kernel_scaled_fp4_quant_fake(
