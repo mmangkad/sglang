@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import torch
 import triton
 
@@ -9,6 +11,7 @@ from sglang.jit_kernel.nvfp4 import scaled_fp4_quant
 FLOAT4_E2M1_MAX = 6.0
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 BLOCK_SIZE = 16
+BENCH_REPEATS = max(1, int(os.getenv("SGLANG_NVFP4_BENCH_REPEATS", "3")))
 
 try:
     from flashinfer import fp4_quantize as flashinfer_fp4_quantize
@@ -109,7 +112,16 @@ def _probe_flashinfer_quant() -> tuple[bool, str]:
 _FLASHINFER_QUANT_AVAILABLE, _FLASHINFER_QUANT_REASON = _probe_flashinfer_quant()
 
 shape_range = get_benchmark_range(
-    full_range=[(128, 2048), (512, 4096), (1024, 4096), (2048, 8192)],
+    full_range=[
+        (64, 1024),
+        (128, 2048),
+        (256, 2048),
+        (512, 4096),
+        (1024, 4096),
+        (1024, 8192),
+        (2048, 8192),
+        (4096, 8192),
+    ],
     ci_range=[(128, 2048)],
 )
 
@@ -131,6 +143,38 @@ line_vals.append("torch_ref")
 line_names.append("Torch Ref")
 styles.append(("blue", "-"))
 
+_INPUT_CACHE: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_benchmark_inputs(m: int, n: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Create deterministic per-shape inputs shared across all providers."""
+    key = (m, n)
+    if key not in _INPUT_CACHE:
+        g = torch.Generator(device="cuda")
+        g.manual_seed(1000003 * m + n)
+        x = torch.randn((m, n), dtype=torch.bfloat16, device="cuda", generator=g)
+        tensor_amax = torch.abs(x).max().to(torch.float32)
+        global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / tensor_amax
+        _INPUT_CACHE[key] = (x, global_scale)
+    return _INPUT_CACHE[key]
+
+
+def _run_benchmark_stable(fn):
+    """Run multiple benchmark rounds and aggregate by median to reduce noise."""
+    if BENCH_REPEATS == 1:
+        return run_benchmark(fn)
+    medians, maxes, mins = [], [], []
+    for _ in range(BENCH_REPEATS):
+        median_us, max_us, min_us = run_benchmark(fn)
+        medians.append(median_us)
+        maxes.append(max_us)
+        mins.append(min_us)
+    return (
+        float(torch.tensor(medians).median().item()),
+        float(torch.tensor(maxes).median().item()),
+        float(torch.tensor(mins).median().item()),
+    )
+
 
 @triton.testing.perf_report(
     triton.testing.Benchmark(
@@ -147,9 +191,7 @@ styles.append(("blue", "-"))
     )
 )
 def benchmark(m, n, provider):
-    x = torch.randn((m, n), dtype=torch.bfloat16, device="cuda")
-    tensor_amax = torch.abs(x).max().to(torch.float32)
-    global_scale = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / tensor_amax
+    x, global_scale = _get_benchmark_inputs(m, n)
 
     if provider == "jit":
         fn = lambda: scaled_fp4_quant(x, global_scale)
@@ -168,10 +210,11 @@ def benchmark(m, n, provider):
     else:
         raise ValueError(f"Unknown provider: {provider}")
 
-    return run_benchmark(fn)
+    return _run_benchmark_stable(fn)
 
 
 if __name__ == "__main__":
+    print(f"[info] SGLANG_NVFP4_BENCH_REPEATS={BENCH_REPEATS}")
     if not _FLASHINFER_QUANT_AVAILABLE:
         print(
             f"[info] flashinfer quant baseline unavailable: {_FLASHINFER_QUANT_REASON}"
