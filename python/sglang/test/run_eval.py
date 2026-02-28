@@ -28,49 +28,37 @@ def get_thinking_kwargs(args):
     return {}
 
 
-def parse_chat_template_kwargs(args):
-    chat_template_kwargs = getattr(args, "chat_template_kwargs", None)
-    if chat_template_kwargs is None:
-        return {}
+def parse_json_object(value: str) -> dict:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as e:
+        raise argparse.ArgumentTypeError("must be a valid JSON object string") from e
 
-    if isinstance(chat_template_kwargs, dict):
-        return chat_template_kwargs.copy()
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("must be a JSON object")
 
-    if isinstance(chat_template_kwargs, str):
-        try:
-            parsed = json.loads(chat_template_kwargs)
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                "--chat-template-kwargs must be a valid JSON object string"
-            ) from e
-
-        if not isinstance(parsed, dict):
-            raise ValueError("--chat-template-kwargs must be a JSON object")
-
-        return parsed
-
-    raise ValueError("chat_template_kwargs must be a dict or a JSON object string")
+    return parsed
 
 
 def run_eval_once(args, base_url: str, eval_obj: Eval) -> dict:
-    # Get thinking kwargs based on user's choice
-    thinking_kwargs = get_thinking_kwargs(args)
-    user_chat_template_kwargs = parse_chat_template_kwargs(args)
+    chat_template_kwargs = getattr(args, "chat_template_kwargs", None)
+    if isinstance(chat_template_kwargs, str):
+        chat_template_kwargs = parse_json_object(chat_template_kwargs)
+    elif chat_template_kwargs is None:
+        chat_template_kwargs = {}
+    elif not isinstance(chat_template_kwargs, dict):
+        raise ValueError("chat_template_kwargs must be a dict or a JSON object string")
 
-    # Build extra_body with chat template kwargs and sampling params
+    chat_template_kwargs = {**get_thinking_kwargs(args), **chat_template_kwargs}
+
     extra_body = {}
-
-    chat_template_kwargs = {**thinking_kwargs, **user_chat_template_kwargs}
     if chat_template_kwargs:
         extra_body["chat_template_kwargs"] = chat_template_kwargs
 
-    top_k = getattr(args, "top_k", None)
-    if top_k is not None:
-        extra_body["top_k"] = top_k
-
-    min_p = getattr(args, "min_p", None)
-    if min_p is not None:
-        extra_body["min_p"] = min_p
+    for param_name in ("top_k", "min_p"):
+        value = getattr(args, param_name, None)
+        if value is not None:
+            extra_body[param_name] = value
 
     sampler = ChatCompletionSampler(
         model=args.model,
@@ -291,7 +279,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--chat-template-kwargs",
-        type=str,
+        type=parse_json_object,
         default=None,
         help="JSON object string for chat_template_kwargs, e.g. '{\"enable_thinking\": true}'",
     )
