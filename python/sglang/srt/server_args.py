@@ -4175,7 +4175,7 @@ class ServerArgs:
             type=str,
             choices=FLASHINFER_ALLREDUCE_BACKEND_CHOICES,
             default=ServerArgs.flashinfer_allreduce_backend,
-            help="FlashInfer backend for standalone/fused allreduce.",
+            help="FlashInfer backend for standalone/fused allreduce. `mnnvl` is optimized for multi-node NVLink setups.",
         )
         parser.add_argument(
             "--enable-aiter-allreduce-fusion",
