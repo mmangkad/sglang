@@ -88,6 +88,7 @@ LOAD_FORMAT_CHOICES = [
     "remote_instance",
     "fastsafetensors",
     "private",
+    "instanttensor",
 ]
 
 QUANTIZATION_CHOICES = [
@@ -3096,7 +3097,10 @@ class ServerArgs:
             "quantization."
             '"layered" loads weights layer by layer so that one can quantize a '
             "layer before loading another to make the peak memory envelope "
-            "smaller.",
+            "smaller."
+            '"instanttensor" accelerates safetensors weight loading by enabling'
+            "distributed loading, pipelined prefetching, and direct I/O, with"
+            "optional GDS support.",
         )
         parser.add_argument(
             "--model-loader-extra-config",

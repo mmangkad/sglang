@@ -31,6 +31,7 @@ class LoadFormat(str, enum.Enum):
     LOCAL_CACHED = "local_cached"
     FASTSAFETENSORS = "fastsafetensors"
     PRIVATE = "private"
+    INSTANTTENSOR = "instanttensor"
 
 
 @dataclass
@@ -51,6 +52,9 @@ class LoadConfig:
         "bitsandbytes" will load nf4 type weights.
         "flash_rl" will load weights with support for RL training
             with quantized models, enabling efficient weight reloading.
+        "instanttensor" accelerates safetensors weight loading by enabling
+        distributed loading, pipelined prefetching, and direct I/O, with
+        optional GDS support.
     ignore_patterns: The list of patterns to ignore when loading the model.
         Default to "original/**/*" to avoid repeated loading of llama's
         checkpoints.
