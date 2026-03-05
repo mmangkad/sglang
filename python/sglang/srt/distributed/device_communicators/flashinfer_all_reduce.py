@@ -32,14 +32,19 @@ MiB = 1024 * 1024
 # differ from vLLM based on runtime/scheduling behavior.
 _FI_ALLREDUCE_MAX_SIZE_MB: dict[int, dict[int, float]] = {
     90: {
-        2: 64,
-        4: 2,
-        8: 0.5,
+        2: 8,
+        4: 64,
+        8: 8,
     },
     100: {
-        2: 64,
-        4: 32,
-        8: 1,
+        2: 16,
+        4: 64,
+        8: 64,
+    },
+    103: {
+        2: 32,
+        4: 64,
+        8: 64,
     },
 }
 
