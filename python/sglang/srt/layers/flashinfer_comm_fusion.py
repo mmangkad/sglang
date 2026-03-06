@@ -63,6 +63,9 @@ def _should_force_posix_fd_transport() -> bool:
 
 @contextlib.contextmanager
 def _flashinfer_posix_fd_transport_override_if_needed():
+    # TODO(mmangkad): Remove this temporary override once the
+    # FlashInfer unified allreduce-fusion transport issue on
+    # GB200/GB300 platforms is fixed and verified resolved.
     global _posix_transport_override_logged
 
     if not _should_force_posix_fd_transport():
