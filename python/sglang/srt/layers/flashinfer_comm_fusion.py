@@ -1,6 +1,5 @@
 import contextlib
 import logging
-import os
 import platform
 from typing import Optional, Tuple
 
@@ -10,6 +9,7 @@ from sglang.srt.distributed import (
     get_tensor_model_parallel_rank,
     get_tensor_model_parallel_world_size,
 )
+from sglang.srt.environ import envs
 from sglang.srt.utils import is_flashinfer_available
 from sglang.srt.utils.custom_op import register_custom_op
 
@@ -20,28 +20,8 @@ _workspace_manager = None
 _posix_transport_override_logged = False
 
 
-def _parse_optional_env_bool(name: str) -> Optional[bool]:
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    logger.warning(
-        "Invalid value for %s=%r. Expected one of "
-        "{0,1,false,true,no,yes,off,on}. Ignoring override.",
-        name,
-        value,
-    )
-    return None
-
-
 def _should_force_posix_fd_transport() -> bool:
-    force_posix_env = _parse_optional_env_bool(
-        "SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT"
-    )
+    force_posix_env = envs.SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT.get()
     if force_posix_env is not None:
         return force_posix_env
 
