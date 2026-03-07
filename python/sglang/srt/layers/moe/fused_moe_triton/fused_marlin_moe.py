@@ -13,8 +13,12 @@ if _is_cuda:
     from sglang.jit_kernel.moe_wna16_marlin import moe_wna16_marlin_gemm
 
 
-def get_scalar_type(num_bits: int, has_zp: bool):
+def get_scalar_type(num_bits: int, has_zp: bool, is_fp4: bool = False):
     from sgl_kernel.scalar_type import scalar_types
+
+    if is_fp4:
+        assert num_bits == 4
+        return scalar_types.float4_e2m1f
 
     if has_zp:
         assert num_bits == 4
@@ -46,6 +50,9 @@ def fused_marlin_moe(
     is_k_full: bool = True,
     inplace: bool = False,
     routed_scaling_factor: Optional[float] = None,
+    w1_bias: Optional[torch.Tensor] = None,
+    w2_bias: Optional[torch.Tensor] = None,
+    is_fp4: bool = False,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -85,12 +92,6 @@ def fused_marlin_moe(
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     assert hidden_states.dtype in [torch.float16, torch.bfloat16]
-    assert (
-        hidden_states.dtype == w1_scale.dtype
-    ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w1_scale.dtype ({w1_scale.dtype})"
-    assert (
-        hidden_states.dtype == w2_scale.dtype
-    ), f"moe_wna16_marlin_gemm assumes hidden_states.dtype ({hidden_states.dtype}) == w2_scale.dtype ({w2_scale.dtype})"
     assert num_bits in [4, 8]
 
     M, K = hidden_states.shape
@@ -121,8 +122,8 @@ def fused_marlin_moe(
             max_workspace_size, dtype=torch.int, device=device, requires_grad=False
         )
 
-    scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None)
-    scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None)
+    scalar_type1 = get_scalar_type(num_bits, w1_zeros is not None, is_fp4=is_fp4)
+    scalar_type2 = get_scalar_type(num_bits, w2_zeros is not None, is_fp4=is_fp4)
 
     intermediate_cache2 = torch.empty(
         (M * topk_ids.shape[1], N),
@@ -148,7 +149,7 @@ def fused_marlin_moe(
         hidden_states,
         intermediate_cache1,
         w1,
-        None,  # b_bias_or_none
+        w1_bias,
         w1_scale,
         None,  # global_scale_or_none
         w1_zeros,
@@ -182,7 +183,7 @@ def fused_marlin_moe(
         intermediate_cache2,
         intermediate_cache3,
         w2,
-        None,  # b_bias_or_none
+        w2_bias,
         w2_scale,
         None,  # global_scale_or_none
         w2_zeros,

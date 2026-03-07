@@ -70,6 +70,9 @@ class MarlinMoeQuantInfo(MoeQuantInfo):
     w2_qzeros: Optional[torch.Tensor] = None
 
     # Optional
+    w13_bias: Optional[torch.Tensor] = None
+    w2_bias: Optional[torch.Tensor] = None
+    is_fp4: bool = False
     expert_map: Optional[torch.Tensor] = None
 
 
@@ -118,6 +121,9 @@ def fused_experts_none_to_marlin(
         is_k_full=quant_info.is_k_full,
         inplace=runner_config.inplace,
         routed_scaling_factor=runner_config.routed_scaling_factor,
+        w1_bias=quant_info.w13_bias,
+        w2_bias=quant_info.w2_bias,
+        is_fp4=quant_info.is_fp4,
     ).to(hidden_states.dtype)
 
     return StandardCombineInput(

@@ -27,12 +27,16 @@ from sglang.srt.distributed.device_communicators.pynccl_allocator import (
 )
 from sglang.srt.layers.dp_attention import is_allocation_symmetric
 from sglang.srt.layers.moe import MoeRunner, MoeRunnerBackend, MoeRunnerConfig
+from sglang.srt.layers.moe.moe_runner.marlin import MarlinMoeQuantInfo
 from sglang.srt.layers.moe.moe_runner.triton import TritonMoeQuantInfo
 from sglang.srt.layers.moe.utils import get_moe_runner_backend
 from sglang.srt.layers.quantization.base_config import (
     FusedMoEMethodBase,
     QuantizationConfig,
     QuantizeMethodBase,
+)
+from sglang.srt.layers.quantization.marlin_utils_fp4 import (
+    prepare_moe_fp4_layer_for_marlin,
 )
 from sglang.srt.layers.quantization.utils import is_layer_skipped
 from sglang.srt.server_args import get_global_server_args
@@ -315,9 +319,18 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
 
         self.prefix = prefix
         self.topk_indices_dtype = None
-        self.use_triton_kernels = get_moe_runner_backend().is_triton_kernels()
+        self.runner_backend = get_moe_runner_backend()
+        if self.runner_backend.is_auto():
+            if is_sm100_supported():
+                self.runner_backend = MoeRunnerBackend.FLASHINFER_MXFP4
+            elif is_sm120_supported():
+                self.runner_backend = MoeRunnerBackend.TRITON_KERNELS
+            elif torch.cuda.is_available() and not is_hip():
+                self.runner_backend = MoeRunnerBackend.MARLIN
+        self.use_triton_kernels = self.runner_backend.is_triton_kernels()
+        self.use_marlin = self.runner_backend.is_marlin()
         self.with_bias = False
-        self.use_flashinfer = get_moe_runner_backend().is_flashinfer_mxfp4()
+        self.use_flashinfer = self.runner_backend.is_flashinfer_mxfp4()
         self.flashinfer_mxfp4_moe_precision = (
             get_global_server_args().flashinfer_mxfp4_moe_precision
         )
@@ -333,16 +346,26 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         **extra_weight_attrs,
     ):
         self.num_experts = num_experts
+        self.original_hidden_size = hidden_size
+        self.original_intermediate_size_per_partition = intermediate_size_per_partition
+        layer.params_dtype = params_dtype
         weight_dtype = torch.uint8
         scale_dtype = torch.uint8
         self.with_bias = with_bias
+        self.hidden_pad = 0
+        self.intermediate_pad = 0
         mxfp4_block = 32
         triton_kernels_padding_alignment = 64
 
         # pad the intermediate size to be a multiple of 2 * mxfp4_block
         # for to hold non-uniform sharded tensor as well as swizzling
         intermediate_size_per_partition_after_pad = intermediate_size_per_partition
-        if is_sm100_supported():
+        if self.use_marlin:
+            intermediate_size_per_partition_after_pad = round_up(
+                intermediate_size_per_partition, 128
+            )
+            hidden_size = round_up(hidden_size, 256)
+        elif is_sm100_supported():
             if self.use_flashinfer:
                 intermediate_size_per_partition_after_pad = round_up(
                     intermediate_size_per_partition, 256
@@ -353,22 +376,21 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                     intermediate_size_per_partition, triton_kernels_padding_alignment
                 )
         elif _use_aiter:
-
             intermediate_size_per_partition_after_pad = round_up(
                 intermediate_size_per_partition, 256
             )
 
             hidden_size = round_up(hidden_size, 256)
-            self.hidden_pad = hidden_size - layer.hidden_size
-            self.intermediate_pad = (
-                intermediate_size_per_partition_after_pad
-                - layer.intermediate_size_per_partition
-            )
         elif has_triton_kernels:
             intermediate_size_per_partition_after_pad = round_up(
                 intermediate_size_per_partition, triton_kernels_padding_alignment
             )
 
+        self.hidden_pad = hidden_size - self.original_hidden_size
+        self.intermediate_pad = (
+            intermediate_size_per_partition_after_pad
+            - self.original_intermediate_size_per_partition
+        )
         self.intermediate_size_per_partition = intermediate_size_per_partition_after_pad
 
         self.hidden_size = hidden_size
@@ -441,6 +463,9 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
         set_weight_attrs(w2_weight_bias, extra_weight_attrs)
 
     def process_weights_after_loading(self, layer):
+        if self.use_marlin:
+            prepare_moe_fp4_layer_for_marlin(layer)
+            return
         if self.use_flashinfer:
             # TODO: these values are hardcoded for now, we need to get them from the model
             layer.gemm1_alpha = Parameter(
@@ -744,9 +769,13 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
     ):
         self.moe_runner_config = moe_runner_config
         backend = (
-            MoeRunnerBackend.TRITON_KERNELS
-            if self.use_triton_kernels
-            else MoeRunnerBackend.TRITON
+            MoeRunnerBackend.MARLIN
+            if self.use_marlin
+            else (
+                MoeRunnerBackend.TRITON_KERNELS
+                if self.use_triton_kernels
+                else MoeRunnerBackend.TRITON
+            )
         )
         self.runner = MoeRunner(backend, moe_runner_config)
 
@@ -868,6 +897,38 @@ class Mxfp4MoEMethod(FusedMoEMethodBase):
                 bias2=layer.w2_weight_bias,
             )
             return StandardCombineInput(hidden_states=output)
+
+        if self.use_marlin:
+            padded_x = x
+            if self.hidden_pad:
+                padded_x = torch.nn.functional.pad(
+                    x,
+                    (0, self.hidden_pad),
+                    mode="constant",
+                    value=0.0,
+                )
+                dispatch_output = dispatch_output._replace(hidden_states=padded_x)
+
+            quant_info = MarlinMoeQuantInfo(
+                w13_qweight=layer.w13_weight,
+                w2_qweight=layer.w2_weight,
+                w13_scales=layer.w13_weight_scale,
+                w2_scales=layer.w2_weight_scale,
+                w13_g_idx_sort_indices=None,
+                w2_g_idx_sort_indices=None,
+                weight_bits=4,
+                w13_bias=getattr(layer, "w13_weight_bias", None),
+                w2_bias=getattr(layer, "w2_weight_bias", None),
+                is_fp4=True,
+            )
+            output = self.runner.run(dispatch_output, quant_info)
+            if self.hidden_pad:
+                return StandardCombineInput(
+                    hidden_states=output.hidden_states[
+                        ..., : self.original_hidden_size
+                    ].contiguous()
+                )
+            return output
 
         backend = self.runner.runner_backend
         if backend.is_triton_kernels():

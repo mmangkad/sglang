@@ -7,6 +7,7 @@ from sgl_kernel.scalar_type import scalar_types
 
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.moe.fused_moe_triton.fused_marlin_moe import fused_marlin_moe
+from sglang.srt.layers.quantization.marlin_utils import marlin_permute_bias
 from sglang.srt.server_args import ServerArgs, set_global_server_args_for_scheduler
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_marlin_utils import awq_marlin_quantize, marlin_quantize
@@ -32,6 +33,8 @@ def torch_experts(
     expert_map: Optional[torch.Tensor] = None,
     quant_dtype: Optional[torch.dtype] = None,
     apply_router_weights_on_input: bool = False,
+    w1_bias: Optional[torch.Tensor] = None,
+    w2_bias: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     assert (
         global_num_experts == -1
@@ -63,8 +66,13 @@ def torch_experts(
         if mask.sum():
             if quant_dtype is None:
                 tmp1 = a[mask] @ w1[i].transpose(0, 1)
+                if w1_bias is not None:
+                    tmp1 = tmp1 + w1_bias[i]
                 tmp2 = SiluAndMul()(tmp1)
-                out[mask] = tmp2 @ w2[i].transpose(0, 1)
+                expert_out = tmp2 @ w2[i].transpose(0, 1)
+                if w2_bias is not None:
+                    expert_out = expert_out + w2_bias[i]
+                out[mask] = expert_out
 
     if apply_router_weights_on_input:
         return out
@@ -84,11 +92,21 @@ def torch_moe(
     topk: int,
     global_num_experts: int = -1,
     expert_map: Optional[torch.Tensor] = None,
+    w1_bias: Optional[torch.Tensor] = None,
+    w2_bias: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     score = torch.softmax(score, dim=-1, dtype=torch.float32)
     topk_weight, topk_ids = torch.topk(score, topk)
     return torch_experts(
-        a, w1, w2, topk_weight, topk_ids, global_num_experts, expert_map
+        a,
+        w1,
+        w2,
+        topk_weight,
+        topk_ids,
+        global_num_experts,
+        expert_map,
+        w1_bias=w1_bias,
+        w2_bias=w2_bias,
     )
 
 
@@ -435,6 +453,82 @@ class TestFusedMarlinMoe(CustomTestCase):
                     torch.testing.assert_close(
                         marlin_output, torch_output, atol=5e-2, rtol=0
                     )
+
+    def test_fused_marlin_moe_bias(self):
+        torch.manual_seed(7)
+
+        m, n, k, e, topk = 32, 128, 256, 4, 2
+        dtype = torch.bfloat16
+        group_size = 128
+        quant_type = scalar_types.uint4b8
+
+        a = torch.randn((m, k), device="cuda", dtype=dtype) / 10
+        w1 = torch.randn((e, 2 * n, k), device="cuda", dtype=dtype) / 20
+        w2 = torch.randn((e, k, n), device="cuda", dtype=dtype) / 20
+        w1_bias = torch.randn((e, 2 * n), device="cuda", dtype=dtype) / 20
+        w2_bias = torch.randn((e, k), device="cuda", dtype=dtype) / 20
+
+        w_ref1_l, qweight1_l, scales1_l = [], [], []
+        for i in range(e):
+            test_perm = torch.randperm(k)
+            w_ref1, qweight1, scales1, _, _, _ = marlin_quantize(
+                w1[i].transpose(1, 0), quant_type, group_size, False, test_perm
+            )
+            w_ref1_l.append(w_ref1.T)
+            qweight1_l.append(qweight1)
+            scales1_l.append(scales1)
+
+        w_ref2_l, qweight2_l, scales2_l = [], [], []
+        for i in range(e):
+            test_perm = torch.randperm(n)
+            w_ref2, qweight2, scales2, _, _, _ = marlin_quantize(
+                w2[i].transpose(1, 0), quant_type, group_size, False, test_perm
+            )
+            w_ref2_l.append(w_ref2.T)
+            qweight2_l.append(qweight2)
+            scales2_l.append(scales2)
+
+        w_ref1 = stack_and_dev(w_ref1_l)
+        qweight1 = stack_and_dev(qweight1_l).contiguous()
+        scales1 = stack_and_dev(scales1_l)
+
+        w_ref2 = stack_and_dev(w_ref2_l)
+        qweight2 = stack_and_dev(qweight2_l).contiguous()
+        scales2 = stack_and_dev(scales2_l)
+
+        score = torch.randn((m, e), device="cuda", dtype=dtype)
+        from sglang.srt.layers.moe.topk import fused_topk_torch_native
+
+        topk_weights, topk_ids = fused_topk_torch_native(a, score, topk, False)
+
+        torch_output = torch_moe(
+            a,
+            w_ref1,
+            w_ref2,
+            score,
+            topk,
+            global_num_experts=e,
+            w1_bias=w1_bias,
+            w2_bias=w2_bias,
+        )
+
+        marlin_output = fused_marlin_moe(
+            a,
+            qweight1,
+            qweight2,
+            scales1,
+            scales2,
+            score,
+            topk_weights,
+            topk_ids,
+            global_num_experts=e,
+            num_bits=4,
+            is_k_full=True,
+            w1_bias=stack_and_dev([marlin_permute_bias(x) for x in w1_bias]),
+            w2_bias=stack_and_dev([marlin_permute_bias(x) for x in w2_bias]),
+        )
+
+        torch.testing.assert_close(marlin_output, torch_output, atol=5e-2, rtol=0)
 
 
 if __name__ == "__main__":
