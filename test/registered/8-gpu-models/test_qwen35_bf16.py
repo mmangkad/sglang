@@ -17,19 +17,19 @@ from sglang.test.test_utils import (
     popen_launch_server,
 )
 
-register_cuda_ci(est_time=1000, suite="stage-c-test-4-gpu-b200")
+register_cuda_ci(est_time=1000, suite="stage-c-test-8-gpu-h200")
 
-QWEN35_FP4_MODEL = "nvidia/Qwen3.5-397B-A17B-NVFP4"
+QWEN35_MODEL = "Qwen/Qwen3.5-397B-A17B"
 
 ACC_THRESHOLDS = {
-    QWEN35_FP4_MODEL: {"gsm8k": 0.95},
+    QWEN35_MODEL: {"gsm8k": 0.95},
 }
 
 
-class TestQwen35FP4(CustomTestCase):
+class TestQwen35BF16(CustomTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model = QWEN35_FP4_MODEL
+        cls.model = QWEN35_MODEL
         cls.base_url = DEFAULT_URL_FOR_TEST
         cls.process = popen_launch_server(
             cls.model,
@@ -37,7 +37,7 @@ class TestQwen35FP4(CustomTestCase):
             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
             other_args=[
                 "--tp-size",
-                "4",
+                "8",
                 "--chunked-prefill-size",
                 "2048",
                 "--mamba-scheduler-strategy",
@@ -50,13 +50,9 @@ class TestQwen35FP4(CustomTestCase):
                 "128",
                 "--reasoning-parser",
                 "qwen3",
-                "--attention-backend",
-                "trtllm_mha",
-                "--quantization",
-                "modelopt_fp4",
                 "--enable-flashinfer-allreduce-fusion",
                 "--model-loader-extra-config",
-                '{"enable_multithread_load": true,"num_threads": 6}',
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
@@ -85,10 +81,10 @@ class TestQwen35FP4(CustomTestCase):
         self.assertGreaterEqual(metrics["score"], ACC_THRESHOLDS[self.model]["gsm8k"])
 
 
-class TestQwen35FP4MTP(CustomTestCase):
+class TestQwen35BF16MTP(CustomTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model = QWEN35_FP4_MODEL
+        cls.model = QWEN35_MODEL
         cls.base_url = DEFAULT_URL_FOR_TEST
         cls.process = popen_launch_server(
             cls.model,
@@ -96,7 +92,7 @@ class TestQwen35FP4MTP(CustomTestCase):
             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
             other_args=[
                 "--tp-size",
-                "4",
+                "8",
                 "--chunked-prefill-size",
                 "2048",
                 "--mamba-scheduler-strategy",
@@ -109,10 +105,6 @@ class TestQwen35FP4MTP(CustomTestCase):
                 "128",
                 "--reasoning-parser",
                 "qwen3",
-                "--attention-backend",
-                "trtllm_mha",
-                "--quantization",
-                "modelopt_fp4",
                 "--enable-flashinfer-allreduce-fusion",
                 "--speculative-algorithm",
                 "NEXTN",
@@ -125,7 +117,7 @@ class TestQwen35FP4MTP(CustomTestCase):
                 "--mem-fraction-static",
                 "0.8",
                 "--model-loader-extra-config",
-                '{"enable_multithread_load": true,"num_threads": 6}',
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
@@ -161,10 +153,10 @@ class TestQwen35FP4MTP(CustomTestCase):
         self.assertGreater(avg_spec_accept_length, 3.3)
 
 
-class TestQwen35FP4MTPV2(CustomTestCase):
+class TestQwen35BF16MTPV2(CustomTestCase):
     @classmethod
     def setUpClass(cls):
-        cls.model = QWEN35_FP4_MODEL
+        cls.model = QWEN35_MODEL
         cls.base_url = DEFAULT_URL_FOR_TEST
         envs.SGLANG_ENABLE_SPEC_V2.set(True)
         cls.process = popen_launch_server(
@@ -173,7 +165,7 @@ class TestQwen35FP4MTPV2(CustomTestCase):
             timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
             other_args=[
                 "--tp-size",
-                "4",
+                "8",
                 "--chunked-prefill-size",
                 "2048",
                 "--mamba-scheduler-strategy",
@@ -186,10 +178,6 @@ class TestQwen35FP4MTPV2(CustomTestCase):
                 "128",
                 "--reasoning-parser",
                 "qwen3",
-                "--attention-backend",
-                "trtllm_mha",
-                "--quantization",
-                "modelopt_fp4",
                 "--enable-flashinfer-allreduce-fusion",
                 "--speculative-algorithm",
                 "NEXTN",
@@ -202,7 +190,7 @@ class TestQwen35FP4MTPV2(CustomTestCase):
                 "--mem-fraction-static",
                 "0.8",
                 "--model-loader-extra-config",
-                '{"enable_multithread_load": true,"num_threads": 6}',
+                '{"enable_multithread_load": true,"num_threads": 64}',
             ],
         )
 
