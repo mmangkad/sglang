@@ -337,13 +337,10 @@ class RMSNorm(MultiPlatformOp):
                     if fused_result[0] is not None:
                         return fused_result
 
-                # For AITER route, preserve correctness when fused path is unavailable.
-                if (
-                    _use_aiter
-                    and get_global_server_args().enable_aiter_allreduce_fusion
-                ):
-                    x = tensor_model_parallel_all_reduce(x)
-                    return self.forward(x, residual, None)
+                # Preserve semantics when the fused path is unavailable. The
+                # residual already includes post_residual_addition above.
+                x = tensor_model_parallel_all_reduce(x)
+                return self.forward(x, residual, None)
 
         return self.forward(x, residual, post_residual_addition)
 
