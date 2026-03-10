@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import logging
 import platform
 from typing import Optional, Tuple
@@ -20,25 +21,58 @@ _workspace_manager = None
 _posix_transport_override_logged = False
 
 
-def _should_force_posix_fd_transport() -> bool:
+def _has_legacy_pynvml_fabric_uuid_layout() -> bool:
+    try:
+        import pynvml
+    except Exception as e:
+        logger.debug("Failed to import pynvml while checking transport override: %s", e)
+        return False
+
+    fabric_info_cls = getattr(pynvml, "c_nvmlGpuFabricInfoV_t", None)
+    fields = getattr(fabric_info_cls, "_fields_", None)
+    if not fields:
+        return False
+
+    for field_name, field_type in fields:
+        if field_name != "clusterUuid":
+            continue
+        try:
+            return issubclass(field_type, ctypes.Array) and (
+                getattr(field_type, "_type_", None) is ctypes.c_char
+            )
+        except TypeError:
+            return False
+
+    return False
+
+
+def _get_posix_fd_transport_override_reason() -> Optional[str]:
     force_posix_env = envs.SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT.get()
     if force_posix_env is not None:
-        return force_posix_env
+        if force_posix_env:
+            return "enabled via " "SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT=1"
+        return None
+
+    if _has_legacy_pynvml_fabric_uuid_layout():
+        return "legacy pynvml fabric UUID layout compatibility"
 
     machine = platform.machine().lower()
     if machine not in ("aarch64", "arm64"):
-        return False
+        return None
 
     if not torch.cuda.is_available():
-        return False
+        return None
 
     try:
         major, _minor = torch.cuda.get_device_capability(torch.cuda.current_device())
     except Exception as e:
         logger.debug("Failed to get CUDA device capability: %s", e)
-        return False
+        return None
 
-    return major == 10
+    if major == 10:
+        return "GB200/GB300 transport workaround on aarch64 + sm10x"
+
+    return None
 
 
 @contextlib.contextmanager
@@ -48,7 +82,8 @@ def _flashinfer_posix_fd_transport_override_if_needed():
     # GB200/GB300 platforms is fixed and verified resolved.
     global _posix_transport_override_logged
 
-    if not _should_force_posix_fd_transport():
+    reason = _get_posix_fd_transport_override_reason()
+    if reason is None:
         yield
         return
 
@@ -68,10 +103,11 @@ def _flashinfer_posix_fd_transport_override_if_needed():
 
     if not _posix_transport_override_logged:
         logger.warning(
-            "Applying FlashInfer transport workaround: forcing PosixFD "
-            "symmetric-memory handle exchange on aarch64 + sm10x to avoid "
-            "known data corruption with Fabric handle exchange on GB systems. "
-            "Set SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT=0 to disable."
+            "Applying FlashInfer transport workaround (%s): forcing PosixFD "
+            "symmetric-memory handle exchange. Set "
+            "SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT=0 to disable or "
+            "=1 to force it.",
+            reason,
         )
         _posix_transport_override_logged = True
 
