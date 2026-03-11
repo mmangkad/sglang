@@ -213,7 +213,7 @@ FP4_GEMM_RUNNER_BACKEND_CHOICES = [
     "flashinfer_cudnn",
     "flashinfer_cutlass",
     "flashinfer_trtllm",
-    "torch",
+    "pytorch",
 ]
 
 MAMBA_SSM_DTYPE_CHOICES = ["float32", "bfloat16", "float16"]
@@ -4369,7 +4369,7 @@ class ServerArgs:
             "'flashinfer_cutlass' (CUTLASS backend), "
             "'flashinfer_cudnn' (FlashInfer cuDNN backend, optimal on CUDA 13+ with cuDNN 9.15+), "
             "'flashinfer_trtllm' (FlashInfer TensorRT-LLM backend, requires different weight preparation with shuffling), "
-            "'torch' (torch._scaled_mm backend; requires torch float4 support and bfloat16 activations). "
+            "'pytorch' (torch._scaled_mm backend; requires torch float4 support and bfloat16 activations). "
             "NOTE: This replaces the deprecated environment variable "
             "SGLANG_FLASHINFER_FP4_GEMM_BACKEND.",
         )

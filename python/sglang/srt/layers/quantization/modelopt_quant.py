@@ -34,6 +34,7 @@ from sglang.srt.layers.quantization.base_config import (
 )
 from sglang.srt.layers.quantization.fp4_utils import (
     get_fp4_gemm_runner_backend,
+    process_torch_scaled_mm_output,
     torch_fp4_gemm_supported,
 )
 from sglang.srt.layers.quantization.fp8_kernel import scaled_fp8_quant
@@ -147,12 +148,6 @@ def fp4_gemm(
         return cutlass_fp4_gemm(input, weight, input_sf, weight_sf, alpha, out_dtype)
 
 
-def _process_torch_scaled_mm_output(output: torch.Tensor) -> torch.Tensor:
-    if type(output) is tuple and len(output) > 0:
-        return output[0]
-    return output
-
-
 def _apply_nvfp4_linear_torch(
     *,
     x: torch.Tensor,
@@ -188,7 +183,7 @@ def _apply_nvfp4_linear_torch(
         scale_b=weight_scale.reshape(-1),
         out_dtype=output_dtype,
     )
-    out = _process_torch_scaled_mm_output(out)
+    out = process_torch_scaled_mm_output(out)
     out = out * alpha
     out = slice_nvfp4_output(out, output_size)
 

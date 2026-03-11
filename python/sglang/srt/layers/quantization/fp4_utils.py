@@ -22,7 +22,7 @@ class Fp4GemmRunnerBackend(Enum):
     FLASHINFER_CUDNN = "flashinfer_cudnn"
     FLASHINFER_CUTLASS = "flashinfer_cutlass"
     FLASHINFER_TRTLLM = "flashinfer_trtllm"
-    TORCH = "torch"
+    TORCH = "pytorch"
 
     def is_auto(self) -> bool:
         return self == Fp4GemmRunnerBackend.AUTO
@@ -59,6 +59,12 @@ FP4_GEMM_RUNNER_BACKEND: Fp4GemmRunnerBackend | None = None
 
 def torch_fp4_gemm_supported() -> bool:
     return hasattr(torch, "_scaled_mm") and hasattr(torch, "float4_e2m1fn_x2")
+
+
+def process_torch_scaled_mm_output(output: torch.Tensor) -> torch.Tensor:
+    if type(output) is tuple and len(output) > 0:
+        return output[0]
+    return output
 
 
 def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
@@ -104,7 +110,7 @@ def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
 
     if backend == Fp4GemmRunnerBackend.TORCH.value and not torch_fp4_gemm_supported():
         raise ValueError(
-            "fp4-gemm-backend=torch requires torch._scaled_mm and "
+            "fp4-gemm-backend=pytorch requires torch._scaled_mm and "
             "torch.float4_e2m1fn_x2 support."
         )
 
@@ -112,7 +118,7 @@ def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
 
     if FP4_GEMM_RUNNER_BACKEND.is_torch():
         logger.warning(
-            "Using fp4-gemm-backend=torch for dense NVFP4 GEMM. This backend is "
+            "Using fp4-gemm-backend=pytorch for dense NVFP4 GEMM. This backend is "
             "experimental, currently supports bfloat16 activations/outputs only, "
             "and may be slower than FlashInfer/cuDNN/CUTLASS backends."
         )
