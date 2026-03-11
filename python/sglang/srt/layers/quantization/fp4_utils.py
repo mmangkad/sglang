@@ -4,6 +4,8 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING
 
+import torch
+
 from sglang.srt.environ import envs
 from sglang.srt.utils.common import is_sm120_supported
 
@@ -20,6 +22,7 @@ class Fp4GemmRunnerBackend(Enum):
     FLASHINFER_CUDNN = "flashinfer_cudnn"
     FLASHINFER_CUTLASS = "flashinfer_cutlass"
     FLASHINFER_TRTLLM = "flashinfer_trtllm"
+    TORCH = "torch"
 
     def is_auto(self) -> bool:
         return self == Fp4GemmRunnerBackend.AUTO
@@ -32,6 +35,9 @@ class Fp4GemmRunnerBackend(Enum):
 
     def is_flashinfer_trtllm(self) -> bool:
         return self == Fp4GemmRunnerBackend.FLASHINFER_TRTLLM
+
+    def is_torch(self) -> bool:
+        return self == Fp4GemmRunnerBackend.TORCH
 
     def get_flashinfer_backend(self) -> str:
         """Get the backend string to pass to FlashInfer's mm_fp4 API.
@@ -51,6 +57,10 @@ class Fp4GemmRunnerBackend(Enum):
 FP4_GEMM_RUNNER_BACKEND: Fp4GemmRunnerBackend | None = None
 
 
+def torch_fp4_gemm_supported() -> bool:
+    return hasattr(torch, "_scaled_mm") and hasattr(torch, "float4_e2m1fn_x2")
+
+
 def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
     """Initialize FP4 GEMM configuration from server args."""
     global FP4_GEMM_RUNNER_BACKEND
@@ -66,7 +76,10 @@ def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
                 "SGLANG_FLASHINFER_FP4_GEMM_BACKEND is deprecated. "
                 f"Please use '--fp4-gemm-backend={env_backend}' instead."
             )
-            if not env_backend.startswith("flashinfer_"):
+            if (
+                not env_backend.startswith("flashinfer_")
+                and env_backend != Fp4GemmRunnerBackend.TORCH.value
+            ):
                 env_backend = "flashinfer_" + env_backend
             backend = env_backend
         else:
@@ -89,7 +102,20 @@ def initialize_fp4_gemm_config(server_args: ServerArgs) -> None:
         else:
             backend = "flashinfer_cutlass"
 
+    if backend == Fp4GemmRunnerBackend.TORCH.value and not torch_fp4_gemm_supported():
+        raise ValueError(
+            "fp4-gemm-backend=torch requires torch._scaled_mm and "
+            "torch.float4_e2m1fn_x2 support."
+        )
+
     FP4_GEMM_RUNNER_BACKEND = Fp4GemmRunnerBackend(backend)
+
+    if FP4_GEMM_RUNNER_BACKEND.is_torch():
+        logger.warning(
+            "Using fp4-gemm-backend=torch for dense NVFP4 GEMM. This backend is "
+            "experimental, currently supports bfloat16 activations/outputs only, "
+            "and may be slower than FlashInfer/cuDNN/CUTLASS backends."
+        )
 
 
 def get_fp4_gemm_runner_backend() -> Fp4GemmRunnerBackend:
