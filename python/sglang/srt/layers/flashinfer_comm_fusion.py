@@ -1,7 +1,6 @@
 import contextlib
 import ctypes
 import logging
-import platform
 from typing import Optional, Tuple
 
 import torch
@@ -53,26 +52,9 @@ def _get_posix_fd_transport_override_reason() -> Optional[str]:
             return "enabled via " "SGLANG_FLASHINFER_FORCE_POSIX_FD_TRANSPORT=1"
         return None
 
-    if _has_legacy_pynvml_fabric_uuid_layout():
-        return "legacy pynvml fabric UUID layout compatibility"
-
-    machine = platform.machine().lower()
-    if machine not in ("aarch64", "arm64"):
-        return None
-
-    if not torch.cuda.is_available():
-        return None
-
-    try:
-        major, _minor = torch.cuda.get_device_capability(torch.cuda.current_device())
-    except Exception as e:
-        logger.debug("Failed to get CUDA device capability: %s", e)
-        return None
-
-    if major == 10:
-        return "GB200/GB300 transport workaround on aarch64 + sm10x"
-
-    return None
+    # TODO(mmangkad): Temporarily always force PosixFD transport to test
+    # on Hopper as well. Revert once testing is done.
+    return "always-on PosixFD transport override for testing"
 
 
 @contextlib.contextmanager
