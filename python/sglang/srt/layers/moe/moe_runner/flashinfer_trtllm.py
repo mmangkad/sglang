@@ -271,6 +271,22 @@ class FlashInferTrtllmFp8MoeQuantInfo(MoeQuantInfo):
     use_routing_scales_on_input: bool = False
 
 
+def _default_routed_scaling_factor(runner_config: MoeRunnerConfig) -> float:
+    return (
+        runner_config.routed_scaling_factor
+        if runner_config.routed_scaling_factor is not None
+        else 1.0
+    )
+
+
+def _cast_routing_bias_like(
+    routing_bias: torch.Tensor | None, routing_logits: torch.Tensor | None
+) -> torch.Tensor | None:
+    if routing_bias is None or routing_logits is None:
+        return None
+    return routing_bias.to(routing_logits.dtype)
+
+
 def _pack_topk_for_flashinfer_routed(
     topk_ids: torch.Tensor, topk_weights: torch.Tensor
 ) -> torch.Tensor:
@@ -308,9 +324,7 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
         router_logits = topk_output.router_logits
         topk_config = topk_output.topk_config
         correction_bias = (
-            None
-            if topk_config.correction_bias is None
-            else topk_config.correction_bias.to(hidden_states.dtype)
+            None if topk_config.correction_bias is None else topk_config.correction_bias
         )
     else:
         router_logits = None
@@ -329,6 +343,14 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
         assert quant_info.weight_block_k is not None
         assert quant_info.w13_weight_scale_inv is not None
         assert quant_info.w2_weight_scale_inv is not None
+        routing_logits_cast = (
+            router_logits.to(torch.float32)
+            if routing_method_type == RoutingMethodType.DeepSeekV3
+            else router_logits
+        )
+        routing_bias_cast = _cast_routing_bias_like(
+            correction_bias, routing_logits_cast
+        )
 
         if quant_info.use_mxfp8:
             assert quant_info.weight_block_k == 32
@@ -373,11 +395,7 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
                     intermediate_size=quant_info.intermediate_size,
                     local_expert_offset=quant_info.local_expert_offset,
                     local_num_experts=quant_info.local_num_experts,
-                    routed_scaling_factor=(
-                        runner_config.routed_scaling_factor
-                        if runner_config.routed_scaling_factor is not None
-                        else 1.0
-                    ),
+                    routed_scaling_factor=_default_routed_scaling_factor(runner_config),
                     routing_method_type=(
                         RoutingMethodType.TopK
                         if routing_method_type == RoutingMethodType.DeepSeekV3
@@ -396,12 +414,8 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
                 # so we put the whole function under the ``use_symmetric_memory`` context manager.
                 # If the bug is fixed, we can only put the output tensor allocation under the context manager.
                 output = trtllm_fp8_block_scale_moe(
-                    routing_logits=(
-                        router_logits.to(torch.float32)
-                        if routing_method_type == RoutingMethodType.DeepSeekV3
-                        else router_logits
-                    ),
-                    routing_bias=correction_bias,
+                    routing_logits=routing_logits_cast,
+                    routing_bias=routing_bias_cast,
                     hidden_states=a_q,
                     hidden_states_scale=a_sf_t,
                     gemm1_weights=quant_info.w13_weight,
@@ -419,11 +433,7 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
                     intermediate_size=quant_info.intermediate_size,
                     local_expert_offset=quant_info.local_expert_offset,
                     local_num_experts=quant_info.local_num_experts,
-                    routed_scaling_factor=(
-                        runner_config.routed_scaling_factor
-                        if runner_config.routed_scaling_factor is not None
-                        else 1.0
-                    ),
+                    routed_scaling_factor=_default_routed_scaling_factor(runner_config),
                     routing_method_type=routing_method_type,
                     use_shuffled_weight=use_shuffled_weight,
                     weight_layout=0,
@@ -437,15 +447,16 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
         assert quant_info.output2_scales_scalar is not None
 
         a_q, _ = scaled_fp8_quant(hidden_states, quant_info.w13_input_scale)
-        routing_bias_cast = (
-            None if correction_bias is None else correction_bias.to(torch.bfloat16)
+        routing_logits_cast = router_logits.to(torch.bfloat16)
+        routing_bias_cast = _cast_routing_bias_like(
+            correction_bias, routing_logits_cast
         )
 
         with use_symmetric_memory(
             get_tp_group(), disabled=not is_allocation_symmetric()
         ):
             output = trtllm_fp8_per_tensor_scale_moe(
-                routing_logits=router_logits.to(torch.bfloat16),
+                routing_logits=routing_logits_cast,
                 routing_bias=routing_bias_cast,
                 hidden_states=a_q,
                 gemm1_weights=quant_info.w13_weight,
@@ -462,11 +473,7 @@ def fused_experts_none_to_flashinfer_trtllm_fp8(
                 intermediate_size=quant_info.intermediate_size,
                 local_expert_offset=quant_info.local_expert_offset,
                 local_num_experts=quant_info.local_num_experts,
-                routed_scaling_factor=(
-                    runner_config.routed_scaling_factor
-                    if runner_config.routed_scaling_factor is not None
-                    else 1.0
-                ),
+                routed_scaling_factor=_default_routed_scaling_factor(runner_config),
                 use_routing_scales_on_input=quant_info.use_routing_scales_on_input,
                 routing_method_type=routing_method_type,
                 tune_max_num_tokens=next_power_of_2(a_q.shape[0]),
@@ -517,10 +524,10 @@ def quantize_hidden_states_fp4(
     # Only the block scales are computed at runtime
     hs_fp4_bytes, hs_sf_bytes = fp4_quantize(
         hidden_states,
-        input_scale_quant,
-        16,  # sf_vec_size
-        False,  # use_ue8m0
-        False,  # is_sf_swizzled_layout
+        global_scale=input_scale_quant,
+        sf_vec_size=16,
+        sf_use_ue8m0=False,
+        is_sf_swizzled_layout=False,
     )
 
     seq_len, hidden_size = hidden_states.shape
@@ -563,15 +570,15 @@ def fused_experts_none_to_flashinfer_trtllm_fp4(
         hidden_states, quant_info.w13_input_scale_quant
     )
 
-    # DeepSeekV3 style routing requires float32 router logits
-    if routing_method_type == RoutingMethodType.DeepSeekV3:
-        router_logits = router_logits.to(torch.float32)
-
-    correction_bias = (
-        None
-        if topk_config.correction_bias is None
-        else topk_config.correction_bias.to(hidden_states.dtype)
+    routing_logits_cast = (
+        router_logits.to(torch.float32)
+        if routing_method_type == RoutingMethodType.DeepSeekV3
+        else router_logits
     )
+    correction_bias = (
+        None if topk_config.correction_bias is None else topk_config.correction_bias
+    )
+    routing_bias_cast = _cast_routing_bias_like(correction_bias, routing_logits_cast)
 
     with use_symmetric_memory(get_tp_group(), disabled=not is_allocation_symmetric()):
         num_tokens = hs_fp4.shape[0]
@@ -583,8 +590,8 @@ def fused_experts_none_to_flashinfer_trtllm_fp4(
         )
 
     result = trtllm_fp4_block_scale_moe(
-        routing_logits=router_logits,
-        routing_bias=correction_bias,
+        routing_logits=routing_logits_cast,
+        routing_bias=routing_bias_cast,
         hidden_states=hs_fp4,
         hidden_states_scale=hs_scale_linear.view(torch.float8_e4m3fn).reshape(
             *hs_scale_linear.shape[:-1], -1
@@ -612,7 +619,7 @@ def fused_experts_none_to_flashinfer_trtllm_fp4(
         intermediate_size=quant_info.intermediate_size_per_partition,
         local_expert_offset=quant_info.local_expert_offset,
         local_num_experts=quant_info.local_num_experts,
-        routed_scaling_factor=runner_config.routed_scaling_factor,
+        routed_scaling_factor=_default_routed_scaling_factor(runner_config),
         tile_tokens_dim=None,
         routing_method_type=(
             routing_method_type
@@ -680,7 +687,9 @@ def fused_experts_none_to_flashinfer_trtllm_bf16(
         # Call the fused kernel
         final_hidden_states = trtllm_bf16_moe(
             routing_logits=topk_output.router_logits,
-            routing_bias=topk_config.correction_bias,
+            routing_bias=_cast_routing_bias_like(
+                topk_config.correction_bias, topk_output.router_logits
+            ),
             hidden_states=hidden_states,
             gemm1_weights=quant_info.gemm1_weights,
             gemm2_weights=quant_info.gemm2_weights,
@@ -692,7 +701,7 @@ def fused_experts_none_to_flashinfer_trtllm_bf16(
             local_expert_offset=quant_info.local_expert_offset,
             local_num_experts=runner_config.num_local_experts,
             routing_method_type=runner_config.routing_method_type,
-            routed_scaling_factor=runner_config.routed_scaling_factor,
+            routed_scaling_factor=_default_routed_scaling_factor(runner_config),
             tune_max_num_tokens=next_power_of_2(hidden_states.shape[0]),
         )
 
