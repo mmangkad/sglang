@@ -64,52 +64,14 @@ if TYPE_CHECKING:
     )
     from sglang.srt.models.utils import WeightsMapper
 
-from flashinfer import fp4_quantize as _flashinfer_fp4_quantize
-from flashinfer import mm_fp4, reorder_rows_for_gated_act_gemm, shuffle_matrix_sf_a
+from flashinfer import (
+    fp4_quantize,
+    mm_fp4,
+    reorder_rows_for_gated_act_gemm,
+    shuffle_matrix_sf_a,
+)
 from flashinfer.fused_moe import cutlass_fused_moe
 from flashinfer.fused_moe.core import ActivationType
-
-from sglang.srt.utils.custom_op import register_custom_op
-
-
-def _fp4_quantize_fake(
-    input: torch.Tensor,
-    global_scale: torch.Tensor,
-    sf_vec_size: int = 16,
-    sf_use_ue8m0: bool = False,
-    is_sf_swizzled_layout: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    M, K = input.shape
-    sf_cols = K // sf_vec_size
-    x_q = input.new_empty((M, K // 2), dtype=torch.uint8)
-    if is_sf_swizzled_layout:
-        padded_m = ((M + 127) // 128) * 128
-        padded_cols = ((sf_cols + 3) // 4) * 4
-        # After kernel, flashinfer reshapes to (-1, sf_cols)
-        sf = input.new_empty(
-            (padded_m * padded_cols // sf_cols, sf_cols), dtype=torch.uint8
-        )
-    else:
-        sf = input.new_empty((M, sf_cols), dtype=torch.uint8)
-    return x_q, sf
-
-
-@register_custom_op(
-    op_name="fp4_quantize",
-    mutates_args=[],
-    fake_impl=_fp4_quantize_fake,
-)
-def fp4_quantize(
-    input: torch.Tensor,
-    global_scale: torch.Tensor,
-    sf_vec_size: int = 16,
-    sf_use_ue8m0: bool = False,
-    is_sf_swizzled_layout: bool = True,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    return _flashinfer_fp4_quantize(
-        input, global_scale, sf_vec_size, sf_use_ue8m0, is_sf_swizzled_layout
-    )
-
 
 # Initialize logger for the module
 logger = logging.getLogger(__name__)
