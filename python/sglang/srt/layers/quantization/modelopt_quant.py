@@ -65,8 +65,9 @@ if TYPE_CHECKING:
     from sglang.srt.models.utils import WeightsMapper
 
 from flashinfer import (
-    fp4_quantize,
+    SfLayout,
     mm_fp4,
+    nvfp4_quantize,
     reorder_rows_for_gated_act_gemm,
     shuffle_matrix_sf_a,
 )
@@ -75,6 +76,18 @@ from flashinfer.fused_moe.core import ActivationType
 
 # Initialize logger for the module
 logger = logging.getLogger(__name__)
+
+
+def fp4_quantize(
+    input: torch.Tensor, global_scale: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Quantize dense activations with the NVFP4 layout expected by mm_fp4."""
+    return nvfp4_quantize(
+        input,
+        global_scale,
+        sfLayout=SfLayout.layout_128x4,
+        do_shuffle=False,
+    )
 
 
 def _sglang_fp4_gemm_fake(
