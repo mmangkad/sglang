@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import pytest
 import torch
-from flashinfer.fused_moe import cutlass_fused_moe as flashinfer_cutlass_fused_moe
+from flashinfer.fused_moe import cutlass_fused_moe
 
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.moe.topk import TopKConfig, select_experts
@@ -96,7 +96,7 @@ def test_flashinfer_bf16_cutlass_moe(m: int, n: int, k: int, e: int, topk: int):
     topk_weights, topk_ids, _ = topk_output
 
     # Test: Call FlashInfer CUTLASS fused_moe (unquantized version)
-    test_output = flashinfer_cutlass_fused_moe(
+    test_output = cutlass_fused_moe(
         input=a,
         token_selected_experts=topk_ids,
         token_final_scales=topk_weights,

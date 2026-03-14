@@ -56,11 +56,8 @@ if _use_aiter:
 if _is_npu:
     from sglang.srt.hardware_backend.npu.utils import npu_format_cast
 
-try:
-    from flashinfer.fused_moe import cutlass_fused_moe as flashinfer_cutlass_fused_moe
-    from flashinfer.fused_moe.core import ActivationType
-except ImportError:
-    flashinfer_cutlass_fused_moe = None
+from flashinfer.fused_moe import cutlass_fused_moe
+from flashinfer.fused_moe.core import ActivationType
 
 
 class UnquantizedEmbeddingMethod(QuantizeMethodBase):
@@ -372,7 +369,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, MultiPlatformOp):
             )
             return self.runner.run(dispatch_output, quant_info)
         elif self.use_flashinfer_cutlass:
-            output = flashinfer_cutlass_fused_moe(
+            output = cutlass_fused_moe(
                 input=x,
                 token_selected_experts=topk_output.topk_ids,
                 token_final_scales=topk_output.topk_weights,

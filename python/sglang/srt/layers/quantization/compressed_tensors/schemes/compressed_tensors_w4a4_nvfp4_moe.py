@@ -399,25 +399,5 @@ class CompressedTensorsW4A4Nvfp4MoE(CompressedTensorsMoEScheme):
                 tune_max_num_tokens=next_power_of_2(hs_fp4.shape[0]),
                 output=symm_output,
             )[0]
-        else:
-            from sglang.srt.layers.moe.cutlass_moe import cutlass_moe_fp4
-
-            topk_weights, topk_ids = topk_output.topk_weights, topk_output.topk_ids
-
-            output = cutlass_moe_fp4(
-                a=x,
-                a1_gscale=layer.w13_input_scale_quant,
-                w1_fp4=layer.w13_weight,
-                w1_blockscale=layer.w13_weight_scale,
-                w1_alphas=layer.g1_alphas,
-                a2_gscale=layer.w2_input_scale_quant,
-                w2_fp4=layer.w2_weight,
-                w2_blockscale=layer.w2_weight_scale,
-                w2_alphas=layer.g2_alphas,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                params=layer.cutlass_moe_params,
-                apply_router_weight_on_input=self.moe_runner_config.apply_router_weight_on_input,
-            ).to(x.dtype)
 
         return StandardCombineInput(hidden_states=output)

@@ -6,7 +6,6 @@ import torch
 from flashinfer import fp4_quantize, scaled_fp4_grouped_quantize
 from torch.nn import functional as F
 
-from sglang.jit_kernel.nvfp4 import scaled_fp4_quant
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.moe.flashinfer_cutedsl_moe import flashinfer_cutedsl_moe_masked
 from sglang.srt.layers.moe.topk import TopKConfig, select_experts
@@ -216,13 +215,9 @@ def check_moe(
         w1_gs[expert] = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / w1_amax
         w2_gs[expert] = FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX / w2_amax
 
-        w1_q[expert], w1_blockscale[expert] = scaled_fp4_quant(
-            w1[expert], w1_gs[expert]
-        )
+        w1_q[expert], w1_blockscale[expert] = fp4_quantize(w1[expert], w1_gs[expert])
 
-        w2_q[expert], w2_blockscale[expert] = scaled_fp4_quant(
-            w2[expert], w2_gs[expert]
-        )
+        w2_q[expert], w2_blockscale[expert] = fp4_quantize(w2[expert], w2_gs[expert])
 
     score = torch.randn((m, e), device="cuda", dtype=dtype)
 
@@ -253,7 +248,7 @@ def check_moe(
     a_global_scale = (
         (FLOAT8_E4M3_MAX * FLOAT4_E2M1_MAX) / torch.amax(a.flatten(), dim=-1)
     ).to(torch.float32)
-    a_fp4, a_scale_interleaved = scaled_fp4_quant(a, a_global_scale)
+    a_fp4, a_scale_interleaved = fp4_quantize(a, a_global_scale)
     _, m_k = a_fp4.shape
     a_in_dtype = dequantize_nvfp4_to_dtype(
         a_fp4,

@@ -185,7 +185,7 @@ MOE_RUNNER_BACKEND_CHOICES = [
     "flashinfer_cutlass",
     "flashinfer_mxfp4",
     "flashinfer_cutedsl",
-    "cutlass",
+    "cutlass",  # deprecated for FP4, use flashinfer_cutlass instead
 ]
 
 MOE_A2A_BACKEND_CHOICES = [
@@ -2519,14 +2519,26 @@ class ServerArgs:
             )
 
         if get_bool_env_var("SGLANG_CUTLASS_MOE"):
+            if self.quantization in ["modelopt_fp4"]:
+                logger.warning(
+                    "SGLANG_CUTLASS_MOE is deprecated, use "
+                    "--moe-runner-backend=flashinfer_cutlass instead"
+                )
+                self.moe_runner_backend = "flashinfer_cutlass"
+            else:
+                logger.warning(
+                    "SGLANG_CUTLASS_MOE is deprecated, use "
+                    "--moe-runner-backend=cutlass instead"
+                )
+                self.moe_runner_backend = "cutlass"
+        if self.moe_runner_backend == "cutlass" and self.quantization in [
+            "modelopt_fp4",
+        ]:
             logger.warning(
-                "SGLANG_CUTLASS_MOE is deprecated, use --moe-runner-backend=cutlass and/or --speculative-moe-runner-backend=cutlass instead"
+                "--moe-runner-backend=cutlass with FP4 quantization is deprecated, "
+                "use --moe-runner-backend=flashinfer_cutlass instead"
             )
-            assert self.quantization in [
-                "fp8",
-                "mxfp8",
-            ], "cutlass MoE is only supported with fp8/mxfp8 quantization"
-            self.moe_runner_backend = "cutlass"
+            self.moe_runner_backend = "flashinfer_cutlass"
         if self.moe_runner_backend == "cutlass" and self.quantization in [
             "fp8",
             "mxfp8",

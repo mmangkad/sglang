@@ -22,12 +22,7 @@ from sglang.srt.layers.quantization.fp8_kernel import (
     scaled_fp8_quant,
 )
 from sglang.srt.layers.utils import copy_or_rebind_param
-from sglang.srt.utils.common import (
-    is_cuda_alike,
-    is_flashinfer_available,
-    is_sm120_supported,
-    next_power_of_2,
-)
+from sglang.srt.utils.common import next_power_of_2
 
 if TYPE_CHECKING:
     from sglang.srt.layers.moe.token_dispatcher import (
@@ -35,12 +30,7 @@ if TYPE_CHECKING:
         StandardDispatchOutput,
     )
 
-if is_flashinfer_available() and is_sm120_supported():
-    from flashinfer import fp4_quantize
-elif is_cuda_alike():
-    from sglang.jit_kernel.nvfp4 import scaled_fp4_quant as fp4_quantize
-else:
-    fp4_quantize = None
+from flashinfer import fp4_quantize
 
 
 def align_fp8_moe_weights_for_flashinfer_trtllm(

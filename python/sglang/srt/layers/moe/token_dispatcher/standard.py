@@ -30,7 +30,7 @@ from sglang.srt.layers.moe.utils import (
     get_moe_runner_backend,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
 )
-from sglang.srt.utils.common import get_bool_env_var, is_hip, is_sm120_supported
+from sglang.srt.utils.common import get_bool_env_var, is_hip
 
 _is_hip = is_hip()
 _use_aiter = get_bool_env_var("SGLANG_USE_AITER") and _is_hip
@@ -39,15 +39,7 @@ if TYPE_CHECKING:
     from sglang.srt.layers.moe.topk import TopKOutput
 
 
-try:
-    if is_sm120_supported():
-        from flashinfer import fp4_quantize
-    else:
-        from sglang.jit_kernel.nvfp4 import scaled_fp4_quant as fp4_quantize
-
-    from flashinfer import fp4_quantize as fp4_quantize_flashinfer
-except ImportError:
-    fp4_quantize = None
+from flashinfer import fp4_quantize
 
 
 class StandardDispatchOutput(NamedTuple):
@@ -114,7 +106,7 @@ class StandardDispatcher(BaseDispatcher):
                 get_tp_group(), disabled=not is_allocation_symmetric()
             ):
                 if hidden_states.shape[0] > 0:
-                    x, x_sf = fp4_quantize_flashinfer(
+                    x, x_sf = fp4_quantize(
                         hidden_states, global_scale, is_sf_swizzled_layout=False
                     )
                 else:
